@@ -4,8 +4,17 @@ const SUPABASE_CONFIG = {
   table: "votes"
 };
 
+const LIVESCORE_CONFIG = {
+  key: "YOUR-LIVESCORE-KEY",
+  secret: "YOUR-LIVESCORE-SECRET",
+  base: "https://livescore-api.com/api-client",
+  competitionId: 362,
+  commentaryPath: "commentary.json",
+  pollSeconds: 15,
+  triggerEvents: ["FOUL_COMMITTED"]
+};
+
 const POLL = {
-  question: "Was that red card necessary?",
   options: ["Yes", "No"],
   decisionSeconds: 10
 };

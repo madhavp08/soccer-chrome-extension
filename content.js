@@ -1,21 +1,35 @@
 let overlayEl = null;
 let selected = null;
+let currentQuestion = "";
 
-const ACCENT_BAR =
-  "linear-gradient(90deg,#e5342b,#ff7a00,#ffd200,#00b86b,#0098da,#2b2f8f)";
 const OPTION_COLORS = ["#00b86b", "#e5342b"];
 const CARD_BG = "#0b1020";
 const PANEL_BG = "#131a30";
 
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg && msg.type === "showPoll") {
-    showOverlay();
-  }
-});
+setInterval(tick, LIVESCORE_CONFIG.pollSeconds * 1000);
 
-function showOverlay() {
+function tick() {
+  if (document.hidden || overlayEl) return;
+  chrome.storage.local.get("enabled").then(({ enabled }) => {
+    if (!enabled) return;
+    chrome.runtime.sendMessage({ type: "checkFouls" }, (res) => {
+      if (chrome.runtime.lastError) return;
+      if (res && res.show && res.foul) showOverlay(res.foul);
+    });
+  });
+}
+
+function buildQuestion(foul) {
+  const who = foul.player ? `${foul.player}` : "A player";
+  const team = foul.team ? ` (${foul.team})` : "";
+  const minute = foul.minute ? `, ${foul.minute}'` : "";
+  return `Foul on ${who}${team}${minute}. Was that a foul?`;
+}
+
+function showOverlay(foul) {
   if (overlayEl) return;
   selected = null;
+  currentQuestion = buildQuestion(foul);
 
   overlayEl = document.createElement("div");
   Object.assign(overlayEl.style, {
@@ -33,10 +47,6 @@ function showOverlay() {
     color: "#ffffff"
   });
 
-  const bar = document.createElement("div");
-  Object.assign(bar.style, { height: "10px", background: ACCENT_BAR });
-  overlayEl.appendChild(bar);
-
   const content = document.createElement("div");
   Object.assign(content.style, {
     padding: "20px",
@@ -46,14 +56,25 @@ function showOverlay() {
   overlayEl.appendChild(content);
 
   const question = document.createElement("div");
-  question.textContent = POLL.question;
+  question.textContent = currentQuestion;
   Object.assign(question.style, {
     fontSize: "18px",
     fontWeight: "700",
     lineHeight: "1.3",
-    marginBottom: "16px"
+    marginBottom: foul.text ? "8px" : "16px"
   });
   content.appendChild(question);
+
+  if (foul.text) {
+    const context = document.createElement("div");
+    context.textContent = foul.text;
+    Object.assign(context.style, {
+      fontSize: "12px",
+      color: "#9aa3c0",
+      marginBottom: "16px"
+    });
+    content.appendChild(context);
+  }
 
   const row = document.createElement("div");
   Object.assign(row.style, { display: "flex", gap: "10px" });
@@ -119,16 +140,19 @@ function finalize(buttons, note, status) {
   }
 
   status.textContent = "Saving...";
-  chrome.runtime.sendMessage({ type: "vote", choice: selected }, (res) => {
-    if (chrome.runtime.lastError) {
-      status.textContent = "Could not save your vote.";
-    } else if (res && res.ok) {
-      status.textContent = `Recorded: ${selected}`;
-    } else {
-      status.textContent = (res && res.error) || "Could not save your vote.";
+  chrome.runtime.sendMessage(
+    { type: "vote", choice: selected, question: currentQuestion },
+    (res) => {
+      if (chrome.runtime.lastError) {
+        status.textContent = "Could not save your vote.";
+      } else if (res && res.ok) {
+        status.textContent = `Recorded: ${selected}`;
+      } else {
+        status.textContent = (res && res.error) || "Could not save your vote.";
+      }
+      removeSoon();
     }
-    removeSoon();
-  });
+  );
 }
 
 function removeSoon() {

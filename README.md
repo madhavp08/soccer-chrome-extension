@@ -1,31 +1,39 @@
 # Ref Watch (MVP)
 
-A minimal Chrome extension that, while turned on, shows a poll about a referee's
-call on the page you are viewing every minute, gives you 10 seconds to pick **Yes**
-or **No**, and stores only the final choice in a Supabase table.
+A minimal Chrome extension for World Cup matches. While turned on, it watches the
+live match and pops up a poll on the page you are viewing each time the referee
+calls a foul, gives you 10 seconds to pick **Yes** or **No** on whether it was the
+right call, and stores only your final choice in a Supabase table.
 
 ## How it works
 
-Clicking the toolbar icon opens a small control panel with a single on/off toggle.
-While the toggle is on, a background service worker (`background.js`) runs a
-one-minute alarm. On each tick it asks the page you are currently viewing to draw a
-small white poll card on top of that page (an in-page overlay from `content.js`)
-with the question and two buttons. You can change your pick freely. After 10
-seconds the overlay auto-submits whatever option is selected and then disappears.
-If nothing is selected, nothing is stored. There is no animated countdown; the
-overlay just states that 10 seconds are available, which keeps the code simple.
+Clicking the toolbar icon opens a small control panel with an on/off toggle, whose
+state is saved in `chrome.storage.local`. While it is on, the content script
+(`content.js`) running on the tab you are viewing polls every 15 seconds, but only
+while that tab is visible. Each poll asks the background service worker
+(`background.js`) to check for new fouls. The worker finds the live World Cup match
+from live-score-api, pulls the latest match commentary, keeps a cursor of the last
+event it has already seen, and returns the most recent new `FOUL_COMMITTED` event.
+When a new foul arrives, the overlay pops up with a contextual question built from
+the event (the player, team, and minute) plus the commentary text, and your vote —
+including that question text for context — is saved to Supabase by the worker.
 
-The poll only appears on the page that is active when the minute ticks. If that
-page cannot host an overlay (such as a `chrome://` page, the Chrome Web Store, or
-the new-tab page), that round is skipped rather than queued for later.
+The poll only appears on the tab that is active when a foul happens. The first poll
+after you switch on (or after a new match starts) primes the cursor silently, so
+you are not shown a backlog of earlier fouls.
 
-The overlay only collects the choice. The actual save to Supabase is performed by
-the service worker, which keeps the network call out of the web page and avoids the
-cross-origin restrictions a page-level request can hit.
+## Data source
 
-## 1. Create the Supabase table
+This uses [live-score-api.com](https://live-score-api.com), which is the affordable
+self-serve provider whose commentary feed includes real per-foul events
+(`FOUL_COMMITTED`) and live text commentary, and which covers the FIFA World Cup
+(`competition_id = 362`). Commentary is a paid package; pick a plan that includes
+World Cup commentary and use the free trial to start. The provider is isolated in
+`config.js` and `background.js` so it can be swapped for an enterprise feed later.
 
-In your Supabase project's SQL editor, run:
+## 1. Supabase table
+
+In your Supabase SQL editor:
 
 ```sql
 create table votes (
@@ -43,53 +51,50 @@ create policy "anon can insert votes"
   with check (true);
 ```
 
-Row level security is enabled and only an `insert` policy is granted to the
-anonymous role. The key in the extension is therefore safe to ship: anyone holding
-it can add a vote but cannot read or modify existing rows.
+The key shipped in the extension is insert-only by row level security.
 
-## 2. Add your credentials
-
-Open `config.js` and set your project's URL and key (Supabase dashboard → Project
-Settings → API Keys). The code accepts either the new publishable key
-(`sb_publishable_...`) or the legacy `anon` JWT key (`eyJ...`):
+## 2. Credentials in `config.js`
 
 ```js
-const SUPABASE_CONFIG = {
-  url: "https://your-project.supabase.co",
-  anonKey: "your-key",
-  table: "votes"
+const SUPABASE_CONFIG = { url: "...", anonKey: "...", table: "votes" };
+
+const LIVESCORE_CONFIG = {
+  key: "your-livescore-key",
+  secret: "your-livescore-secret",
+  base: "https://livescore-api.com/api-client",
+  competitionId: 362,
+  commentaryPath: "commentary.json",
+  pollSeconds: 15,
+  triggerEvents: ["FOUL_COMMITTED"]
 };
 ```
 
-## 3. Load the extension locally
+Verify `commentaryPath` against your dashboard's Postman collection; if their
+commentary URL differs (for example `matches/commentary.json`), set it here. The
+key and secret are passed as query parameters, which is how live-score-api
+authenticates.
 
-1. Open `chrome://extensions`.
-2. Turn on **Developer mode**.
-3. Click **Load unpacked** and select this folder.
-4. Click the Ref Watch icon and switch the toggle on.
+## 3. Load the extension
 
-After loading or reloading the extension, reload any web page you already had open
-so the overlay script is injected into it. Then the first poll appears one minute
-after you turn the toggle on.
+1. Open `chrome://extensions`, enable Developer mode, click Load unpacked, select
+   this folder.
+2. Refresh the tab you want polls to appear on (content scripts only inject on
+   pages loaded after the extension).
+3. Click the icon and switch the toggle on during a live World Cup match.
 
 ## Viewing votes
 
-In the Supabase dashboard, open Table Editor and select the `votes` table, or run
-this in the SQL Editor for a tally:
+In Supabase, open Table Editor → `votes`, or tally with:
 
 ```sql
-select choice, count(*)
-from votes
-group by choice
-order by count(*) desc;
+select choice, count(*) from votes group by choice order by count(*) desc;
 ```
 
 ## Known MVP limits
 
-- The overlay appears only on the active tab at the moment the minute ticks; other
-  rounds for non-overlay pages are skipped.
-- A freshly loaded or reloaded extension only injects its overlay into pages opened
-  or refreshed afterward.
-- Chrome alarms fire at a minimum interval of one minute, which is what we use.
-- The question, the option labels, and the 10-second timer all live in `config.js`
-  so they are easy to change.
+- Polling runs only on the visible match tab, so close that tab and polling stops.
+- live-score-api commentary updates in near real time; a foul may appear a few
+  seconds after it happens.
+- Fouls are frequent, so expect a pop-up roughly once or twice a minute during play;
+  if one is already showing, new fouls during those seconds are skipped.
+- The trigger list, competition, poll interval, and timer all live in `config.js`.
