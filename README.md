@@ -1,16 +1,23 @@
 # Ref Watch (MVP)
 
-A minimal Chrome extension that asks one question about a referee's call, gives the
-user 15 seconds to pick **Yes** or **No**, and stores only the final choice in a
-Supabase table.
+A minimal Chrome extension that, while turned on, pops up a question about a
+referee's call every minute, gives the user 10 seconds to pick **Yes** or **No**,
+and stores only the final choice in a Supabase table.
 
 ## How it works
 
-Clicking the toolbar icon opens a plain white popup with the question and two
-buttons. The user can change their pick freely. After 15 seconds the popup
-auto-submits whatever option is currently selected to Supabase. If nothing is
-selected, nothing is stored. There is no animated countdown; the popup just states
-that 15 seconds are available, which keeps the code simple.
+Clicking the toolbar icon opens a small control panel with a single on/off toggle.
+While the toggle is on, a background service worker runs a one-minute alarm, and on
+each tick it opens a small plain white poll window with the question and two
+buttons. The user can change their pick freely. After 10 seconds the window
+auto-submits whatever option is currently selected to Supabase and then closes
+itself. If nothing is selected, nothing is stored. There is no animated countdown;
+the window just states that 10 seconds are available, which keeps the code simple.
+
+A toolbar popup cannot reliably open itself on a timer in Chrome, so the poll is
+shown as its own small window opened by the service worker. This works regardless
+of which website is in front. The first poll appears one minute after you turn the
+toggle on.
 
 ## 1. Create the Supabase table
 
@@ -61,7 +68,9 @@ Web Store.
 
 ## Known MVP limits
 
-- A Chrome popup closes if it loses focus, which stops the 15-second timer. Keep
-  the popup open to let the vote save. A persistent on-page overlay can replace
-  this later.
-- The question and timer length live in `config.js` so they are easy to change.
+- The poll is a separate small window, so it works no matter which site is in
+  front, but it does steal focus for a moment when it appears.
+- Chrome alarms fire at a minimum interval of one minute, which is exactly what we
+  use here.
+- The question, the option labels, and the 10-second timer all live in `config.js`
+  so they are easy to change.
