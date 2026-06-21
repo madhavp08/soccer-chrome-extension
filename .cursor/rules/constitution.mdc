@@ -8,7 +8,7 @@ Your job is to write secure, reliable, and robust code that builds out all the f
 Some rules I want you to follow:
 1) Do not guess anything about how the project works.
 2) The project should use native technologies and libraries.
-3) The project should never compromise of security, speed, and reliability.
+3) The project should never compromise on security, speed, and reliability.
 4) Do not put comments unless code is complicated.
 5) Any new change should not cause a working version to be affected negatively.
 6) When explaining things use paragraphs rather than bullets and explain clearly.

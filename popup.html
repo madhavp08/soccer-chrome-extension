@@ -6,11 +6,22 @@
   </head>
   <body>
     <main class="card">
-      <h1 class="title">Ref Watch</h1>
-      <label class="toggle">
-        <input type="checkbox" id="enabled" />
-        <span>Auto-poll every minute</span>
+      <header class="header">
+        <span class="logo"></span>
+        <div class="brand">
+          <h1 class="title">Ref Watch</h1>
+          <p class="subtitle">Referee call polls</p>
+        </div>
+      </header>
+
+      <label class="row">
+        <span class="row-label">Auto-poll every minute</span>
+        <span class="switch">
+          <input type="checkbox" id="enabled" />
+          <span class="slider"></span>
+        </span>
       </label>
+
       <p id="state" class="note"></p>
     </main>
     <script src="popup.js"></script>

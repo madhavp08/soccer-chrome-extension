@@ -1,6 +1,12 @@
 let overlayEl = null;
 let selected = null;
 
+const ACCENT_BAR =
+  "linear-gradient(90deg,#e5342b,#ff7a00,#ffd200,#00b86b,#0098da,#2b2f8f)";
+const OPTION_COLORS = ["#00b86b", "#e5342b"];
+const CARD_BG = "#0b1020";
+const PANEL_BG = "#131a30";
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg && msg.type === "showPoll") {
     showOverlay();
@@ -14,53 +20,66 @@ function showOverlay() {
   overlayEl = document.createElement("div");
   Object.assign(overlayEl.style, {
     position: "fixed",
-    top: "16px",
+    top: "18px",
     left: "50%",
     transform: "translateX(-50%)",
     zIndex: "2147483647",
-    background: "#ffffff",
-    color: "#111111",
-    padding: "16px 18px",
-    borderRadius: "10px",
-    boxShadow: "0 4px 20px rgba(0,0,0,0.25)",
+    width: "340px",
+    background: CARD_BG,
+    borderRadius: "14px",
+    overflow: "hidden",
+    boxShadow: "0 10px 30px rgba(0,0,0,0.45)",
     fontFamily: "-apple-system, system-ui, sans-serif",
-    width: "280px",
+    color: "#ffffff"
+  });
+
+  const bar = document.createElement("div");
+  Object.assign(bar.style, { height: "10px", background: ACCENT_BAR });
+  overlayEl.appendChild(bar);
+
+  const content = document.createElement("div");
+  Object.assign(content.style, {
+    padding: "20px",
+    minHeight: "190px",
     boxSizing: "border-box"
   });
+  overlayEl.appendChild(content);
 
   const question = document.createElement("div");
   question.textContent = POLL.question;
   Object.assign(question.style, {
-    fontSize: "16px",
-    fontWeight: "600",
-    marginBottom: "12px"
+    fontSize: "18px",
+    fontWeight: "700",
+    lineHeight: "1.3",
+    marginBottom: "16px"
   });
-  overlayEl.appendChild(question);
+  content.appendChild(question);
 
   const row = document.createElement("div");
   Object.assign(row.style, { display: "flex", gap: "10px" });
-  overlayEl.appendChild(row);
+  content.appendChild(row);
 
-  const buttons = POLL.options.map((label) => {
+  const buttons = POLL.options.map((label, index) => {
+    const color = OPTION_COLORS[index] || "#0098da";
     const btn = document.createElement("button");
     btn.textContent = label;
     Object.assign(btn.style, {
       flex: "1",
-      padding: "10px 0",
-      fontSize: "15px",
-      fontWeight: "600",
-      background: "#ffffff",
-      color: "#111111",
-      border: "1px solid #d0d0d0",
-      borderRadius: "8px",
+      padding: "12px 0",
+      fontSize: "16px",
+      fontWeight: "700",
+      background: PANEL_BG,
+      color: "#ffffff",
+      border: `2px solid ${color}`,
+      borderRadius: "10px",
       cursor: "pointer"
     });
     btn.addEventListener("click", () => {
       selected = label;
-      buttons.forEach((b) => {
+      buttons.forEach((b, i) => {
         const on = b === btn;
-        b.style.background = on ? "#111111" : "#ffffff";
-        b.style.color = on ? "#ffffff" : "#111111";
+        b.style.background = on ? OPTION_COLORS[i] || "#0098da" : PANEL_BG;
+        b.style.boxShadow = on ? "0 0 0 3px rgba(255,255,255,0.18)" : "none";
       });
     });
     row.appendChild(btn);
@@ -70,20 +89,20 @@ function showOverlay() {
   const note = document.createElement("div");
   note.textContent = `You have ${POLL.decisionSeconds} seconds to decide.`;
   Object.assign(note.style, {
-    marginTop: "12px",
+    marginTop: "16px",
     fontSize: "12px",
-    color: "#777777"
+    color: "#9aa3c0"
   });
-  overlayEl.appendChild(note);
+  content.appendChild(note);
 
   const status = document.createElement("div");
   Object.assign(status.style, {
-    marginTop: "6px",
+    marginTop: "8px",
     fontSize: "13px",
     fontWeight: "600",
     minHeight: "16px"
   });
-  overlayEl.appendChild(status);
+  content.appendChild(status);
 
   document.body.appendChild(overlayEl);
 
