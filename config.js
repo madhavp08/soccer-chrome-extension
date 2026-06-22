@@ -5,10 +5,7 @@ const SUPABASE_CONFIG = {
 };
 
 const APIFOOTBALL_CONFIG = {
-  key: "09df76bc07ff1d316299fcaeafc3c884",
-  base: "https://v3.football.api-sports.io",
-  league: 1,
-  season: 2026,
+  functionUrl: "https://luwpwlvbflaspmdqwahs.supabase.co/functions/v1/refwatch-events",
   pollSeconds: 20,
   triggerTypes: ["Card", "Var"],
   finishedStatuses: ["FT", "AET", "PEN"]
@@ -16,5 +13,6 @@ const APIFOOTBALL_CONFIG = {
 
 const POLL = {
   options: ["Yes", "No"],
-  decisionSeconds: 10
+  decisionSeconds: 20,
+  confirmSeconds: 5
 };

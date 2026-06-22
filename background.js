@@ -56,27 +56,23 @@ async function checkEvents() {
 }
 
 async function findLiveFixture() {
-  const { key, base, league, season } = APIFOOTBALL_CONFIG;
-  const url = `${base}/fixtures?league=${league}&season=${season}&live=all`;
-
-  const res = await fetch(url, { headers: { "x-apisports-key": key } });
-  const json = await res.json().catch(() => null);
+  const json = await callProxy("action=live");
   const list = json && Array.isArray(json.response) ? json.response : [];
-
-  if (!res.ok || !list.length) return null;
-  return list[0].fixture.id;
+  return list.length ? list[0].fixture.id : null;
 }
 
 async function fetchFixture(id) {
-  const { key, base } = APIFOOTBALL_CONFIG;
-  const url = `${base}/fixtures?id=${id}`;
-
-  const res = await fetch(url, { headers: { "x-apisports-key": key } });
-  const json = await res.json().catch(() => null);
+  const json = await callProxy(`action=fixture&id=${id}`);
   const list = json && Array.isArray(json.response) ? json.response : [];
+  return list.length ? list[0] : null;
+}
 
-  if (!res.ok || !list.length) return null;
-  return list[0];
+async function callProxy(query) {
+  const res = await fetch(`${APIFOOTBALL_CONFIG.functionUrl}?${query}`, {
+    headers: { apikey: SUPABASE_CONFIG.anonKey }
+  });
+  if (!res.ok) return null;
+  return res.json().catch(() => null);
 }
 
 function buildPoll(event) {

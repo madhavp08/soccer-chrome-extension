@@ -37,6 +37,12 @@ for `season = 2026`. Any paid tier (cheapest is Pro) unlocks all seasons. With a
 paid plan the daily request limit is generous, so we cache the live fixture id and
 poll every 20 seconds (`pollSeconds`) for near-real-time pop-ups.
 
+The paid API-Football key is **never shipped in the extension**. It lives only in a
+Supabase Edge Function (`supabase/functions/refwatch-events`) that proxies the two
+calls we need. The extension calls that function with the public Supabase key; the
+function adds the secret key server-side. This keeps the paid key safe when the
+extension is distributed publicly.
+
 ## 1. Supabase table
 
 In your Supabase SQL editor:
@@ -59,25 +65,45 @@ create policy "anon can insert votes"
 
 The key shipped in the extension is insert-only by row level security.
 
-## 2. Credentials in `config.js`
+## 2. Deploy the API-Football proxy (Edge Function)
+
+The function in `supabase/functions/refwatch-events/index.ts` holds your paid
+API-Football key as a server-side secret. Using the Supabase CLI:
+
+```bash
+supabase login
+supabase link --project-ref luwpwlvbflaspmdqwahs
+
+# store the paid key as a secret (never in the extension)
+supabase secrets set APIFOOTBALL_KEY=your-api-football-key
+
+# optional: only allow callers that send your Supabase publishable key
+supabase secrets set ALLOWED_APIKEY=your-supabase-publishable-key
+
+# deploy; --no-verify-jwt because the extension authenticates with the
+# publishable key (not a JWT)
+supabase functions deploy refwatch-events --no-verify-jwt
+```
+
+The league (1) and season (2026) are set inside the function. To add goals to the
+trigger, add `"Goal"` to `triggerTypes` in `config.js`; to poll less often, raise
+`pollSeconds`.
+
+## 2b. Client config (`config.js`)
 
 ```js
 const SUPABASE_CONFIG = { url: "...", anonKey: "...", table: "votes" };
 
 const APIFOOTBALL_CONFIG = {
-  key: "your-api-football-key",
-  base: "https://v3.football.api-sports.io",
-  league: 1,
-  season: 2026,
-  pollSeconds: 120,
+  functionUrl: "https://<project-ref>.supabase.co/functions/v1/refwatch-events",
+  pollSeconds: 20,
   triggerTypes: ["Card", "Var"],
   finishedStatuses: ["FT", "AET", "PEN"]
 };
 ```
 
-Create a free account at api-football.com (api-sports.io) and paste your API key.
-It is sent in the `x-apisports-key` header. To poll less often (saving quota) raise
-`pollSeconds`; to also pop up on goals, add `"Goal"` to `triggerTypes`.
+The extension sends the Supabase publishable key as the `apikey` header to the
+function. No API-Football key is present in any shipped file.
 
 ## 3. Load the extension
 

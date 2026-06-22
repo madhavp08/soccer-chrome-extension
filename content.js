@@ -21,6 +21,8 @@ function showOverlay(poll) {
   if (overlayEl) return;
   selected = null;
   currentQuestion = poll.question;
+  let finalized = false;
+  let confirmTimer = null;
 
   overlayEl = document.createElement("div");
   Object.assign(overlayEl.style, {
@@ -93,6 +95,9 @@ function showOverlay(poll) {
         b.style.background = on ? "#ffffff" : "transparent";
         b.style.color = on ? "#111111" : "#ffffff";
       });
+      note.textContent = `Submitting in ${POLL.confirmSeconds}s unless you change it.`;
+      clearTimeout(confirmTimer);
+      confirmTimer = setTimeout(finalize, POLL.confirmSeconds * 1000);
     });
     row.appendChild(btn);
     return btn;
@@ -118,32 +123,36 @@ function showOverlay(poll) {
 
   document.body.appendChild(overlayEl);
 
-  setTimeout(() => finalize(buttons, note, status), POLL.decisionSeconds * 1000);
-}
+  const maxTimer = setTimeout(finalize, POLL.decisionSeconds * 1000);
 
-function finalize(buttons, note, status) {
-  buttons.forEach((b) => (b.disabled = true));
+  function finalize() {
+    if (finalized) return;
+    finalized = true;
+    clearTimeout(confirmTimer);
+    clearTimeout(maxTimer);
+    buttons.forEach((b) => (b.disabled = true));
 
-  if (selected === null) {
-    note.textContent = "Time's up. No option selected.";
-    removeSoon();
-    return;
-  }
-
-  status.textContent = "Saving...";
-  chrome.runtime.sendMessage(
-    { type: "vote", choice: selected, question: currentQuestion },
-    (res) => {
-      if (chrome.runtime.lastError) {
-        status.textContent = "Could not save your vote.";
-      } else if (res && res.ok) {
-        status.textContent = `Recorded: ${selected}`;
-      } else {
-        status.textContent = (res && res.error) || "Could not save your vote.";
-      }
+    if (selected === null) {
+      note.textContent = "Time's up. No option selected.";
       removeSoon();
+      return;
     }
-  );
+
+    status.textContent = "Saving...";
+    chrome.runtime.sendMessage(
+      { type: "vote", choice: selected, question: currentQuestion },
+      (res) => {
+        if (chrome.runtime.lastError) {
+          status.textContent = "Could not save your vote.";
+        } else if (res && res.ok) {
+          status.textContent = `Recorded: ${selected}`;
+        } else {
+          status.textContent = (res && res.error) || "Could not save your vote.";
+        }
+        removeSoon();
+      }
+    );
+  }
 }
 
 function removeSoon() {
