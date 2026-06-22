@@ -91,6 +91,12 @@ trigger, add `"Goal"` to `triggerTypes` in `config.js`; to poll less often, rais
 
 ## 2b. Client config (`config.js`)
 
+Copy `config.example.js` to `config.js` and fill in your values:
+
+```bash
+cp config.example.js config.js
+```
+
 ```js
 const SUPABASE_CONFIG = { url: "...", anonKey: "...", table: "votes" };
 
@@ -102,8 +108,10 @@ const APIFOOTBALL_CONFIG = {
 };
 ```
 
-The extension sends the Supabase publishable key as the `apikey` header to the
-function. No API-Football key is present in any shipped file.
+`config.js` is gitignored, so it is never committed — only `config.example.js` is.
+The only key it holds is the Supabase publishable key (insert-only, safe to ship in
+the extension package). No API-Football key is present in any file; that key lives
+only in the Edge Function secret.
 
 ## 3. Load the extension
 
