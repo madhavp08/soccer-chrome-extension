@@ -4,14 +4,14 @@ const SUPABASE_CONFIG = {
   table: "votes"
 };
 
-const LIVESCORE_CONFIG = {
-  key: "YOUR-LIVESCORE-KEY",
-  secret: "YOUR-LIVESCORE-SECRET",
-  base: "https://livescore-api.com/api-client",
-  competitionId: 362,
-  commentaryPath: "commentary.json",
-  pollSeconds: 15,
-  triggerEvents: ["FOUL_COMMITTED"]
+const APIFOOTBALL_CONFIG = {
+  key: "09df76bc07ff1d316299fcaeafc3c884",
+  base: "https://v3.football.api-sports.io",
+  league: 1,
+  season: 2026,
+  pollSeconds: 120,
+  triggerTypes: ["Card", "Var"],
+  finishedStatuses: ["FT", "AET", "PEN"]
 };
 
 const POLL = {

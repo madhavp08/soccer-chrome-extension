@@ -1,8 +1,8 @@
 importScripts("config.js");
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg && msg.type === "checkFouls") {
-    checkFouls()
+  if (msg && msg.type === "checkEvents") {
+    checkEvents()
       .then(sendResponse)
       .catch(() => sendResponse({ show: false }));
     return true;
@@ -15,81 +15,88 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-async function checkFouls() {
+async function checkEvents() {
   const { enabled } = await chrome.storage.local.get("enabled");
   if (!enabled) return { show: false };
 
-  const matchId = await getLiveMatchId();
-  if (!matchId) return { show: false };
+  let { afFixtureId, afEventsLen } = await chrome.storage.local.get([
+    "afFixtureId",
+    "afEventsLen"
+  ]);
 
-  const foul = await getNewFoul(matchId);
-  if (!foul) return { show: false };
-
-  return { show: true, foul };
-}
-
-async function getLiveMatchId() {
-  const { key, secret, base, competitionId } = LIVESCORE_CONFIG;
-  const url = `${base}/matches/live.json?key=${key}&secret=${secret}&competition_id=${competitionId}`;
-
-  const res = await fetch(url);
-  if (!res.ok) return null;
-
-  const json = await res.json();
-  const matches = json && json.data && json.data.match;
-  const list = Array.isArray(matches) ? matches : matches ? [matches] : [];
-  return list.length ? list[0].id : null;
-}
-
-async function getNewFoul(matchId) {
-  const { key, secret, base, commentaryPath, triggerEvents } = LIVESCORE_CONFIG;
-  const url = `${base}/${commentaryPath}?key=${key}&secret=${secret}&match_id=${matchId}`;
-
-  const res = await fetch(url);
-  if (!res.ok) return null;
-
-  const json = await res.json();
-  const events = json && json.data && json.data.commentary;
-  if (!Array.isArray(events)) return null;
-
-  const maxSecond = events.reduce(
-    (max, e) => Math.max(max, Number(e.match_second) || 0),
-    0
-  );
-
-  const state = await chrome.storage.local.get(["lsMatchId", "lsLastSecond"]);
-
-  if (state.lsMatchId !== matchId) {
-    await chrome.storage.local.set({
-      lsMatchId: matchId,
-      lsLastSecond: maxSecond
-    });
-    return null;
+  if (!afFixtureId) {
+    afFixtureId = await findLiveFixture();
+    if (!afFixtureId) return { show: false };
+    afEventsLen = null;
   }
 
-  const lastSecond = state.lsLastSecond || 0;
-  const fouls = events
-    .filter(
-      (e) =>
-        triggerEvents.includes(e.event_type) &&
-        Number(e.match_second) > lastSecond
-    )
-    .sort((a, b) => Number(a.match_second) - Number(b.match_second));
+  const data = await fetchFixture(afFixtureId);
+  if (!data) return { show: false };
+
+  const events = Array.isArray(data.events) ? data.events : [];
+  const status = data.fixture && data.fixture.status ? data.fixture.status.short : "";
+  const finished = APIFOOTBALL_CONFIG.finishedStatuses.includes(status);
+
+  let result = { show: false };
+  if (afEventsLen != null) {
+    const fresh = events
+      .slice(afEventsLen)
+      .filter((e) => APIFOOTBALL_CONFIG.triggerTypes.includes(e.type));
+    if (fresh.length) {
+      result = { show: true, poll: buildPoll(fresh[fresh.length - 1]) };
+    }
+  }
 
   await chrome.storage.local.set({
-    lsMatchId: matchId,
-    lsLastSecond: Math.max(maxSecond, lastSecond)
+    afFixtureId: finished ? null : afFixtureId,
+    afEventsLen: finished ? null : events.length
   });
 
-  if (!fouls.length) return null;
+  return result;
+}
 
-  const latest = fouls[fouls.length - 1];
-  return {
-    player: latest.player && latest.player.name ? latest.player.name : "",
-    team: latest.team && latest.team.name ? latest.team.name : "",
-    minute: latest.minute || "",
-    text: latest.text || ""
-  };
+async function findLiveFixture() {
+  const { key, base, league, season } = APIFOOTBALL_CONFIG;
+  const url = `${base}/fixtures?league=${league}&season=${season}&live=all`;
+
+  const res = await fetch(url, { headers: { "x-apisports-key": key } });
+  if (!res.ok) return null;
+
+  const json = await res.json();
+  const list = Array.isArray(json.response) ? json.response : [];
+  return list.length ? list[0].fixture.id : null;
+}
+
+async function fetchFixture(id) {
+  const { key, base } = APIFOOTBALL_CONFIG;
+  const url = `${base}/fixtures?id=${id}`;
+
+  const res = await fetch(url, { headers: { "x-apisports-key": key } });
+  if (!res.ok) return null;
+
+  const json = await res.json();
+  const list = Array.isArray(json.response) ? json.response : [];
+  return list.length ? list[0] : null;
+}
+
+function buildPoll(event) {
+  const team = event.team && event.team.name ? event.team.name : "";
+  const player = event.player && event.player.name ? event.player.name : "";
+  const elapsed = event.time && event.time.elapsed != null ? event.time.elapsed : null;
+  const extra = event.time && event.time.extra ? `+${event.time.extra}` : "";
+  const minute = elapsed != null ? `${elapsed}${extra}'` : "";
+  const detail = event.detail || (event.type === "Card" ? "Card" : "VAR review");
+  const context = event.comments || "";
+
+  if (event.type === "Card") {
+    const who = player ? `${player} (${team})` : team;
+    const when = minute ? `, ${minute}` : "";
+    return { question: `${detail} for ${who}${when} — right call?`, context };
+  }
+
+  const where = team ? ` (${team})` : "";
+  const when = minute ? `, ${minute}` : "";
+  return { question: `VAR: ${detail}${where}${when} — do you agree?`, context };
 }
 
 async function submitVote(choice, question) {

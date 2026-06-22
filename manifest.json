@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Ref Watch",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Quick poll on controversial referee calls during World Cup matches.",
   "action": {
     "default_popup": "popup.html",

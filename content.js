@@ -6,30 +6,23 @@ const OPTION_COLORS = ["#00b86b", "#e5342b"];
 const CARD_BG = "#0b1020";
 const PANEL_BG = "#131a30";
 
-setInterval(tick, LIVESCORE_CONFIG.pollSeconds * 1000);
+setInterval(tick, APIFOOTBALL_CONFIG.pollSeconds * 1000);
 
 function tick() {
   if (document.hidden || overlayEl) return;
   chrome.storage.local.get("enabled").then(({ enabled }) => {
     if (!enabled) return;
-    chrome.runtime.sendMessage({ type: "checkFouls" }, (res) => {
+    chrome.runtime.sendMessage({ type: "checkEvents" }, (res) => {
       if (chrome.runtime.lastError) return;
-      if (res && res.show && res.foul) showOverlay(res.foul);
+      if (res && res.show && res.poll) showOverlay(res.poll);
     });
   });
 }
 
-function buildQuestion(foul) {
-  const who = foul.player ? `${foul.player}` : "A player";
-  const team = foul.team ? ` (${foul.team})` : "";
-  const minute = foul.minute ? `, ${foul.minute}'` : "";
-  return `Foul on ${who}${team}${minute}. Was that a foul?`;
-}
-
-function showOverlay(foul) {
+function showOverlay(poll) {
   if (overlayEl) return;
   selected = null;
-  currentQuestion = buildQuestion(foul);
+  currentQuestion = poll.question;
 
   overlayEl = document.createElement("div");
   Object.assign(overlayEl.style, {
@@ -61,13 +54,13 @@ function showOverlay(foul) {
     fontSize: "18px",
     fontWeight: "700",
     lineHeight: "1.3",
-    marginBottom: foul.text ? "8px" : "16px"
+    marginBottom: poll.context ? "8px" : "16px"
   });
   content.appendChild(question);
 
-  if (foul.text) {
+  if (poll.context) {
     const context = document.createElement("div");
-    context.textContent = foul.text;
+    context.textContent = poll.context;
     Object.assign(context.style, {
       fontSize: "12px",
       color: "#9aa3c0",
