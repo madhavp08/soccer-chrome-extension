@@ -72,10 +72,16 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-const previewRow = document.querySelector(".preview-row");
-if (devMode && previewRow) {
-  previewRow.hidden = false;
-  document.getElementById("preview-vote").addEventListener("click", () => sendPreview("vote"));
-  document.getElementById("preview-goal").addEventListener("click", () => sendPreview("goal"));
-  document.getElementById("preview-results").addEventListener("click", () => sendPreview("results"));
+if (devMode) {
+  const row = document.createElement("div");
+  row.className = "preview-row";
+  [["vote", "Vote"], ["goal", "Goal"], ["results", "Results"]].forEach(([kind, label]) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "preview-btn";
+    btn.textContent = label;
+    btn.addEventListener("click", () => sendPreview(kind));
+    row.appendChild(btn);
+  });
+  stateEl.insertAdjacentElement("afterend", row);
 }
