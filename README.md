@@ -13,22 +13,36 @@ Built with plain JavaScript, HTML, and CSS — no frameworks or build step.
 ## How it works
 
 The toolbar icon opens a control panel with an on/off toggle, saved in
-`chrome.storage.local`. While it's on, the content script syncs every few seconds with
-the service worker and Supabase. When a card or VAR is detected, the first sync
-registers the question in Supabase with a shared `opened_at` timestamp. Every client
-reads that same clock, so the vote window and results bar stay aligned across users.
-Delayed streams still get the poll when the API reports the event (they may have less
-time left to vote). Results appear `POLL.resultsDelaySeconds` (21s) after
-`opened_at`, not after each user votes individually.
+`chrome.storage.local`. When you turn it on, the content script on your visible tab
+asks how you are following: **Viewer** or **Moments**. That choice sticks until you
+turn VARdict off, same as the match selection.
 
-Voting: the overlay lasts up to 20 seconds; once you pick an option it auto-submits
-after 5 seconds unless you change it (changing resets the 5s timer). Keyboard shortcuts
-while the poll is open: A or J for Yes, D or L for No.
+**Viewer** is for people watching live. You only get vote overlays on cards and VAR,
+plus the Yes/No percentage bar after you vote (at `opened_at + 21 seconds`, shared
+with everyone).
 
-Results: after you vote, the percentage bar appears at a fixed time —
-`opened_at + 21 seconds` — shared for everyone on that question. If several cards
-happen together, you vote on each in turn, then see each bar at its own scheduled time.
-Vote counts are never shown — only the percentage split.
+**Moments** is for people not watching. You get short pop-ups when goals are scored.
+Cards and VAR skip the alert — you only see the community Yes/No percentage bar at the
+same shared time as viewers.
+
+If more than one World Cup match is live, you pick a match after choosing your mode.
+One live match is selected automatically. The extension only follows events for that
+fixture.
+
+While it is on, the content script syncs every few seconds with the service worker and
+Supabase. When a card or VAR is detected, the first sync registers the question in
+Supabase with a shared `opened_at` timestamp. Every client reads that same clock, so
+the vote window and results bar stay aligned across users. Delayed streams still get
+the poll when the API reports the event (they may have less time left to vote).
+
+Voting (Viewer only): the overlay lasts up to 20 seconds; once you pick an option it
+auto-submits after 5 seconds unless you change it (changing resets the 5s timer).
+Keyboard shortcuts while the poll is open: A or J for Yes, D or L for No.
+
+Results: Viewers see the bar after voting, at `opened_at + 21 seconds`. Moments users
+see the same bar for cards and VAR at that time (no vote, no prior alert). If several
+events happen together, overlays are shown one at a time. Vote counts are never shown —
+only the percentage split.
 
 ## Architecture
 
@@ -168,11 +182,16 @@ during a live match.
 
 In `config.js`:
 
-- `APIFOOTBALL_CONFIG.triggerTypes` — `["Card", "Var"]`; add `"Goal"` to also poll on goals.
+- `MODES.viewer.triggerTypes` — events that open a vote (`["Card", "Var"]`).
+- `MODES.moments.triggerTypes` — API events tracked in Moments mode
+  (`["Goal", "Card", "Var"]`).
+- `MODES.moments.momentTypes` — events that show a goal-style alert (`["Goal"]`).
+- `MODES.moments.pollTypes` — events that only schedule a results bar (`["Card", "Var"]`).
 - `POLL.syncSeconds` — how often clients sync with Supabase (default 3).
-- `POLL.decisionSeconds` — vote window length from `opened_at` (20).
+- `POLL.decisionSeconds` — vote window length from `opened_at` (20, Viewer only).
 - `POLL.resultsDelaySeconds` — when the results bar appears after `opened_at` (21).
-- `POLL.confirmSeconds` — auto-submit delay after a pick (5).
+- `POLL.confirmSeconds` — auto-submit delay after a pick (5, Viewer only).
+- `POLL.momentShowSeconds` — how long a Moments alert stays on screen (5).
 - `POLL.resultsThreshold` — minimum votes before showing a bar (0 shows even yours alone).
 
 ## Viewing votes

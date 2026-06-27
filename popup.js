@@ -6,10 +6,20 @@ function render() {
     stateEl.textContent = "Off.";
     return;
   }
-  chrome.storage.local.get("selectedGameLabel").then(({ selectedGameLabel }) => {
-    stateEl.textContent = selectedGameLabel
-      ? `On. Following ${selectedGameLabel}.`
-      : "On. Pick a live match on your page.";
+  chrome.storage.local.get(["selectedGameLabel", "vardictMode"]).then(({ selectedGameLabel, vardictMode }) => {
+    const modeLabel =
+      vardictMode && typeof MODES !== "undefined" && MODES[vardictMode]
+        ? MODES[vardictMode].label
+        : null;
+    if (!modeLabel) {
+      stateEl.textContent = "On. Choose Viewer or Moments on your page.";
+      return;
+    }
+    if (selectedGameLabel) {
+      stateEl.textContent = `On. ${modeLabel} — ${selectedGameLabel}.`;
+      return;
+    }
+    stateEl.textContent = `On. ${modeLabel}. Pick a live match on your page.`;
   });
 }
 
@@ -24,6 +34,7 @@ checkbox.addEventListener("change", () => {
   } else {
     chrome.storage.local.set({
       enabled: false,
+      vardictMode: null,
       selectedGameId: null,
       selectedGameLabel: null,
       afEventsLen: null
@@ -33,7 +44,7 @@ checkbox.addEventListener("change", () => {
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && (changes.selectedGameLabel || changes.enabled)) {
+  if (area === "local" && (changes.selectedGameLabel || changes.enabled || changes.vardictMode)) {
     render();
   }
 });

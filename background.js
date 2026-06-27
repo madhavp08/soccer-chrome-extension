@@ -7,6 +7,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch(() => sendResponse({ activePolls: [] }));
     return true;
   }
+  if (msg && msg.type === "selectMode") {
+    if (!MODES[msg.mode]) {
+      sendResponse({ ok: false });
+      return;
+    }
+    chrome.storage.local
+      .set({ vardictMode: msg.mode, afEventsLen: null })
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
   if (msg && msg.type === "selectGame") {
     chrome.storage.local
       .set({
@@ -33,17 +44,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 async function sync() {
-  const { enabled, selectedGameId, afEventsLen } = await chrome.storage.local.get([
+  const { enabled, selectedGameId, afEventsLen, vardictMode } = await chrome.storage.local.get([
     "enabled",
     "selectedGameId",
-    "afEventsLen"
+    "afEventsLen",
+    "vardictMode"
   ]);
   if (!enabled) return { activePolls: [] };
+  if (!vardictMode || !MODES[vardictMode]) return { needModePick: true, activePolls: [] };
 
   let gameId = selectedGameId;
   if (!gameId) {
     const games = await listLiveGames();
-    if (!games.length) return { activePolls: [] };
+    if (!games.length) return { mode: vardictMode, activePolls: [], goalMoments: [] };
     if (games.length === 1) {
       gameId = games[0].id;
       await chrome.storage.local.set({
@@ -52,36 +65,65 @@ async function sync() {
         afEventsLen: null
       });
     } else {
-      return { needGamePick: true, games, activePolls: [] };
+      return { needGamePick: true, mode: vardictMode, games, activePolls: [], goalMoments: [] };
     }
   }
 
-  await registerNewEvents(gameId, afEventsLen);
+  const goalMoments = await registerNewEvents(gameId, afEventsLen, vardictMode);
   const activePolls = await fetchActivePolls(gameId);
-  return { activePolls };
+  return {
+    mode: vardictMode,
+    activePolls,
+    goalMoments: vardictMode === "moments" ? goalMoments : []
+  };
 }
 
-async function registerNewEvents(gameId, afEventsLen) {
+function pollEventTypes(mode) {
+  if (mode === "moments") {
+    return MODES.moments.pollTypes || ["Card", "Var"];
+  }
+  return triggersForMode(mode);
+}
+
+function momentEventTypes(mode) {
+  if (mode !== "moments") return [];
+  return MODES.moments.momentTypes || ["Goal"];
+}
+
+function triggersForMode(mode) {
+  return MODES[mode] ? MODES[mode].triggerTypes : [];
+}
+
+async function registerNewEvents(gameId, afEventsLen, mode) {
   const data = await fetchFixture(gameId);
-  if (!data) return;
+  if (!data) return [];
 
   const events = Array.isArray(data.events) ? data.events : [];
   const status = data.fixture && data.fixture.status ? data.fixture.status.short : "";
   const finished = APIFOOTBALL_CONFIG.finishedStatuses.includes(status);
+  const triggers = triggersForMode(mode);
+  const polls = pollEventTypes(mode);
+  const moments = momentEventTypes(mode);
+  const goalMoments = [];
 
   if (afEventsLen != null && !finished) {
-    const fresh = events
-      .slice(afEventsLen)
-      .filter((e) => APIFOOTBALL_CONFIG.triggerTypes.includes(e.type));
+    const fresh = events.slice(afEventsLen).filter((e) => triggers.includes(e.type));
     for (const event of fresh) {
-      const poll = buildPoll(event);
-      await openPoll(gameId, poll.question);
+      if (polls.includes(event.type)) {
+        const poll = buildPoll(event);
+        await openPoll(gameId, poll.question);
+      }
+      if (moments.includes(event.type)) {
+        goalMoments.push(buildGoalMoment(event));
+      }
     }
   }
 
   if (!finished) {
     await chrome.storage.local.set({ afEventsLen: events.length });
   }
+
+  return goalMoments;
 }
 
 async function openPoll(fixtureId, question) {
@@ -165,6 +207,22 @@ function buildPoll(event) {
   const where = team ? ` (${team})` : "";
   const when = minute ? `, ${minute}` : "";
   return { question: `VAR: ${detail}${where}${when} — do you agree?`, context };
+}
+
+function buildGoalMoment(event) {
+  const team = event.team && event.team.name ? event.team.name : "";
+  const player = event.player && event.player.name ? event.player.name : "";
+  const elapsed = event.time && event.time.elapsed != null ? event.time.elapsed : null;
+  const extra = event.time && event.time.extra ? `+${event.time.extra}` : "";
+  const minute = elapsed != null ? `${elapsed}${extra}'` : "";
+  const when = minute ? ` · ${minute}` : "";
+  const who = player ? `${player} (${team})` : team || "Unknown";
+  const detail = event.detail ? ` (${event.detail})` : "";
+
+  return {
+    key: `goal:${minute}:${team}:${player}:${event.detail || ""}`,
+    text: `Goal${when}${detail} — ${who}`
+  };
 }
 
 async function submitVote(choice, question) {

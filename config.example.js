@@ -9,8 +9,20 @@ const SUPABASE_CONFIG = {
 
 const APIFOOTBALL_CONFIG = {
   functionUrl: "https://YOUR-PROJECT.supabase.co/functions/v1/refwatch-events",
-  triggerTypes: ["Card", "Var"],
   finishedStatuses: ["FT", "AET", "PEN"]
+};
+
+const MODES = {
+  viewer: {
+    label: "Viewer",
+    triggerTypes: ["Card", "Var"]
+  },
+  moments: {
+    label: "Moments",
+    triggerTypes: ["Goal", "Card", "Var"],
+    momentTypes: ["Goal"],
+    pollTypes: ["Card", "Var"]
+  }
 };
 
 const POLL = {
@@ -19,5 +31,6 @@ const POLL = {
   decisionSeconds: 20,
   confirmSeconds: 5,
   resultsDelaySeconds: 21,
-  resultsThreshold: 1
+  resultsThreshold: 1,
+  momentShowSeconds: 5
 };

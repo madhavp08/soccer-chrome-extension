@@ -1,11 +1,15 @@
 let overlayEl = null;
 let busy = false;
 let gamePickerOpen = false;
+let modePickerOpen = false;
+let currentMode = null;
 
 const voteQueue = [];
+const momentQueue = [];
 const pendingBreakdowns = [];
 const handled = new Set();
 const voted = new Set();
+const shownMoments = new Set();
 
 const CARD_BG = "#121212";
 const YES_COLOR = "#00b86b";
@@ -17,29 +21,51 @@ const RESULTS_SHOW_MS = 6000;
 setInterval(syncTick, POLL.syncSeconds * 1000);
 
 function syncTick() {
-  if (document.hidden || overlayEl || busy || gamePickerOpen) return;
+  if (document.hidden || overlayEl || busy || gamePickerOpen || modePickerOpen) return;
   if (!chrome.runtime || !chrome.runtime.id) return;
   try {
     chrome.storage.local.get("enabled", ({ enabled }) => {
       if (!enabled) {
         gamePickerOpen = false;
+        modePickerOpen = false;
+        currentMode = null;
         return;
       }
       chrome.runtime.sendMessage({ type: "sync" }, (res) => {
         if (chrome.runtime.lastError) return;
+        if (res && res.needModePick) {
+          showModePicker();
+          return;
+        }
         if (res && res.needGamePick && res.games && res.games.length) {
           showGamePicker(res.games);
           return;
         }
-        ingestActivePolls(res && res.activePolls ? res.activePolls : []);
-        tryStartVote();
-        tryStartBreakdown();
+        currentMode = res && res.mode ? res.mode : null;
+        if (currentMode === "moments") {
+          handleMomentsSync(res);
+        } else if (currentMode === "viewer") {
+          handleViewerSync(res);
+        }
       });
     });
   } catch (e) {}
 }
 
-function ingestActivePolls(polls) {
+function handleViewerSync(res) {
+  ingestViewerPolls(res && res.activePolls ? res.activePolls : []);
+  tryStartVote();
+  tryStartBreakdown(true);
+}
+
+function handleMomentsSync(res) {
+  ingestGoalMoments(res && res.goalMoments ? res.goalMoments : []);
+  ingestMomentsBreakdownPolls(res && res.activePolls ? res.activePolls : []);
+  tryStartGoalMoment();
+  tryStartBreakdown(false);
+}
+
+function ingestViewerPolls(polls) {
   const now = Date.now();
   for (const poll of polls) {
     if (handled.has(poll.question)) continue;
@@ -47,33 +73,64 @@ function ingestActivePolls(polls) {
     if (Number.isNaN(opened)) continue;
     const voteEnd = opened + POLL.decisionSeconds * 1000;
     if (now >= voteEnd && !voted.has(poll.question)) {
-      scheduleBreakdown(poll.question, opened);
+      scheduleViewerBreakdown(poll.question, opened);
       continue;
     }
     if (now >= voteEnd) continue;
     if (voteQueue.some((p) => p.question === poll.question)) continue;
     if (voted.has(poll.question)) {
-      scheduleBreakdown(poll.question, opened);
+      scheduleViewerBreakdown(poll.question, opened);
       continue;
     }
     voteQueue.push({ question: poll.question, openedAt: poll.openedAt, opened });
   }
 }
 
-function scheduleBreakdown(question, opened) {
-  if (handled.has(question)) return;
-  const showAt = opened + POLL.resultsDelaySeconds * 1000;
-  if (pendingBreakdowns.some((b) => b.question === question)) return;
-  if (voted.has(question)) {
-    pendingBreakdowns.push({ question, showAt });
-    pendingBreakdowns.sort((a, b) => a.showAt - b.showAt);
-  } else if (Date.now() >= showAt) {
-    handled.add(question);
+function ingestMomentsBreakdownPolls(polls) {
+  const now = Date.now();
+  for (const poll of polls) {
+    if (handled.has(poll.question)) continue;
+    const opened = Date.parse(poll.openedAt);
+    if (Number.isNaN(opened)) continue;
+    const showAt = opened + POLL.resultsDelaySeconds * 1000;
+    if (now >= showAt + RESULTS_SHOW_MS) {
+      handled.add(poll.question);
+      continue;
+    }
+    scheduleMomentsBreakdown(poll.question, opened);
   }
 }
 
+function ingestGoalMoments(moments) {
+  for (const moment of moments) {
+    if (!moment || !moment.key || shownMoments.has(moment.key)) continue;
+    if (momentQueue.some((m) => m.key === moment.key)) continue;
+    momentQueue.push(moment);
+  }
+}
+
+function scheduleViewerBreakdown(question, opened) {
+  scheduleBreakdown(question, opened, true);
+}
+
+function scheduleMomentsBreakdown(question, opened) {
+  scheduleBreakdown(question, opened, false);
+}
+
+function scheduleBreakdown(question, opened, requireVote) {
+  if (handled.has(question)) return;
+  const showAt = opened + POLL.resultsDelaySeconds * 1000;
+  if (pendingBreakdowns.some((b) => b.question === question)) return;
+  if (requireVote && !voted.has(question)) {
+    if (Date.now() >= showAt) handled.add(question);
+    return;
+  }
+  pendingBreakdowns.push({ question, showAt });
+  pendingBreakdowns.sort((a, b) => a.showAt - b.showAt);
+}
+
 function tryStartVote() {
-  if (busy || overlayEl || gamePickerOpen || !voteQueue.length) return;
+  if (busy || overlayEl || gamePickerOpen || modePickerOpen || !voteQueue.length) return;
   const poll = voteQueue.shift();
   const voteEnd = poll.opened + POLL.decisionSeconds * 1000;
   if (Date.now() >= voteEnd) {
@@ -84,8 +141,23 @@ function tryStartVote() {
   showPoll(poll, voteEnd);
 }
 
-function tryStartBreakdown() {
-  if (busy || overlayEl || gamePickerOpen || !pendingBreakdowns.length) return;
+function tryStartGoalMoment() {
+  if (busy || overlayEl || gamePickerOpen || modePickerOpen || !momentQueue.length) return;
+  const moment = momentQueue.shift();
+  busy = true;
+  showGoalMoment(moment, () => {
+    shownMoments.add(moment.key);
+    busy = false;
+    tryStartGoalMoment();
+    tryStartBreakdown(false);
+    tryStartVote();
+  });
+}
+
+function tryStartBreakdown(requireVote) {
+  if (busy || overlayEl || gamePickerOpen || modePickerOpen || !pendingBreakdowns.length) {
+    return;
+  }
   const next = pendingBreakdowns[0];
   if (Date.now() < next.showAt) return;
   pendingBreakdowns.shift();
@@ -93,9 +165,85 @@ function tryStartBreakdown() {
   showBreakdown(next.question, () => {
     handled.add(next.question);
     busy = false;
-    tryStartBreakdown();
+    tryStartBreakdown(requireVote);
+    tryStartGoalMoment();
     tryStartVote();
   });
+}
+
+function showModePicker() {
+  if (overlayEl || modePickerOpen) return;
+  modePickerOpen = true;
+  busy = true;
+
+  const { el, content } = makeCard();
+  overlayEl = el;
+
+  div(content, "How are you following the match?", {
+    fontSize: "17px",
+    fontWeight: "700",
+    lineHeight: "1.3",
+    marginBottom: "8px"
+  });
+  div(content, "You can change this only by turning VARdict off.", {
+    fontSize: "12px",
+    color: "#888888",
+    marginBottom: "16px"
+  });
+
+  const modes = [
+    {
+      id: "viewer",
+      title: "Viewer",
+      hint: "Watching live — vote on cards and VAR."
+    },
+    {
+      id: "moments",
+      title: "Moments",
+      hint: "Not watching — goal alerts and community results on cards & VAR."
+    }
+  ];
+
+  modes.forEach((mode) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    Object.assign(btn.style, {
+      display: "block",
+      width: "100%",
+      marginBottom: "8px",
+      padding: "12px",
+      fontSize: "14px",
+      fontWeight: "600",
+      background: "transparent",
+      color: "#ffffff",
+      border: "1px solid rgba(255,255,255,0.3)",
+      borderRadius: "8px",
+      cursor: "pointer",
+      textAlign: "left"
+    });
+    const title = document.createElement("div");
+    title.textContent = mode.title;
+    title.style.fontWeight = "700";
+    title.style.marginBottom = "4px";
+    const hint = document.createElement("div");
+    hint.textContent = mode.hint;
+    hint.style.fontSize = "12px";
+    hint.style.color = "#888888";
+    hint.style.fontWeight = "400";
+    btn.appendChild(title);
+    btn.appendChild(hint);
+    btn.addEventListener("click", () => {
+      btn.disabled = true;
+      chrome.runtime.sendMessage({ type: "selectMode", mode: mode.id }, () => {
+        modePickerOpen = false;
+        busy = false;
+        clearOverlay();
+      });
+    });
+    content.appendChild(btn);
+  });
+
+  document.body.appendChild(el);
 }
 
 function showGamePicker(games) {
@@ -150,6 +298,23 @@ function showGamePicker(games) {
   });
 
   document.body.appendChild(el);
+}
+
+function showGoalMoment(moment, done) {
+  const { el, content } = makeCard();
+  overlayEl = el;
+
+  div(content, moment.text, {
+    fontSize: "17px",
+    fontWeight: "700",
+    lineHeight: "1.35"
+  });
+
+  document.body.appendChild(el);
+  setTimeout(() => {
+    clearOverlay();
+    done();
+  }, POLL.momentShowSeconds * 1000);
 }
 
 function showPoll(poll, voteEnd) {
@@ -256,11 +421,11 @@ function showPoll(poll, voteEnd) {
           !chrome.runtime.lastError && res && res.ok
             ? `Recorded: ${selected}`
             : "Could not save your vote.";
-        scheduleBreakdown(poll.question, poll.opened);
+        scheduleViewerBreakdown(poll.question, poll.opened);
         setTimeout(() => {
           clearOverlay();
           busy = false;
-          tryStartBreakdown();
+          tryStartBreakdown(true);
           tryStartVote();
         }, 800);
       }
