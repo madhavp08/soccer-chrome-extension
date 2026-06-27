@@ -35,5 +35,6 @@ const POLL = {
   confirmSeconds: 5,
   resultsDelaySeconds: 21,
   resultsThreshold: 1,
-  momentShowSeconds: 5
+  momentShowSeconds: 5,
+  countShowSeconds: 3
 };

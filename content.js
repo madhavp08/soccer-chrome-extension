@@ -23,6 +23,24 @@ const PREVIEW = {
 };
 
 ensureOverlayStyles();
+document.addEventListener("fullscreenchange", reparentOverlayIfNeeded);
+document.addEventListener("webkitfullscreenchange", reparentOverlayIfNeeded);
+
+function getOverlayRoot() {
+  return document.fullscreenElement || document.webkitFullscreenElement || document.body;
+}
+
+function mountOverlay(el) {
+  getOverlayRoot().appendChild(el);
+}
+
+function reparentOverlayIfNeeded() {
+  if (!overlayEl || !overlayEl.parentNode) return;
+  const root = getOverlayRoot();
+  if (overlayEl.parentNode !== root) {
+    root.appendChild(overlayEl);
+  }
+}
 
 function ensureOverlayStyles() {
   if (document.getElementById("vardict-overlay-styles")) return;
@@ -320,7 +338,7 @@ function showModePicker() {
     content.appendChild(btn);
   });
 
-  document.body.appendChild(el);
+  mountOverlay(el);
 }
 
 function showGamePicker(games) {
@@ -355,7 +373,7 @@ function showGamePicker(games) {
     content.appendChild(btn);
   });
 
-  document.body.appendChild(el);
+  mountOverlay(el);
 }
 
 function showGoalMoment(moment, done) {
@@ -368,7 +386,7 @@ function showGoalMoment(moment, done) {
     lineHeight: "1.35"
   });
 
-  document.body.appendChild(el);
+  mountOverlay(el);
   setTimeout(() => {
     clearOverlay();
     done();
@@ -439,7 +457,7 @@ function showPoll(poll, voteEnd, options) {
     minHeight: "16px"
   });
 
-  document.body.appendChild(el);
+  mountOverlay(el);
   const maxTimer = setTimeout(finalize, msLeft);
 
   function finalize() {
@@ -499,7 +517,7 @@ function showBreakdown(question, done) {
     marginBottom: "14px"
   });
   const body = div(content, "Loading results…", { className: "vardict-muted", marginBottom: "0" });
-  document.body.appendChild(el);
+  mountOverlay(el);
 
   chrome.runtime.sendMessage({ type: "breakdown", question }, (res) => {
     if (chrome.runtime.lastError || !res || !res.ok || res.total <= POLL.resultsThreshold) {
@@ -507,11 +525,14 @@ function showBreakdown(question, done) {
       done();
       return;
     }
-    renderBar(body, res.yes, res.no, res.total);
+    showVoteCounts(body, res.yes, res.no, res.total);
     setTimeout(() => {
-      clearOverlay();
-      done();
-    }, RESULTS_SHOW_MS);
+      renderBar(body, res.yes, res.no, res.total);
+      setTimeout(() => {
+        clearOverlay();
+        done();
+      }, RESULTS_SHOW_MS);
+    }, POLL.countShowSeconds * 1000);
   });
 }
 
@@ -559,6 +580,33 @@ function clearOverlay() {
     overlayEl.parentNode.removeChild(overlayEl);
   }
   overlayEl = null;
+}
+
+function showVoteCounts(body, yes, no, total) {
+  body.textContent = "";
+  body.style.color = "#ffffff";
+
+  div(body, `${total} vote${total === 1 ? "" : "s"}`, {
+    fontSize: "14px",
+    fontWeight: "700",
+    marginBottom: "12px",
+    textAlign: "center"
+  });
+
+  const row = div(body, "", {
+    display: "flex",
+    justifyContent: "space-between",
+    fontSize: "13px",
+    fontWeight: "600"
+  });
+  const y = document.createElement("span");
+  y.textContent = `Yes ${yes}`;
+  y.style.color = YES_COLOR;
+  const n = document.createElement("span");
+  n.textContent = `No ${no}`;
+  n.style.color = NO_COLOR;
+  row.appendChild(y);
+  row.appendChild(n);
 }
 
 function renderBar(body, yes, no, total) {
@@ -645,10 +693,13 @@ function showPreviewBreakdown(question, done) {
     marginBottom: "14px"
   });
   const body = div(content, "", {});
-  document.body.appendChild(el);
-  renderBar(body, 62, 38, 100);
+  mountOverlay(el);
+  showVoteCounts(body, 62, 38, 100);
   setTimeout(() => {
-    clearOverlay();
-    done();
-  }, RESULTS_SHOW_MS);
+    renderBar(body, 62, 38, 100);
+    setTimeout(() => {
+      clearOverlay();
+      done();
+    }, RESULTS_SHOW_MS);
+  }, POLL.countShowSeconds * 1000);
 }

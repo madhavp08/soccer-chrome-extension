@@ -1,41 +1,44 @@
-# Ref Watch — Privacy Policy
+# VARdict — Privacy Policy
 
-_Last updated: June 22, 2026_
+_Last updated: June 27, 2026_
 
-Ref Watch ("the extension") shows a short Yes/No poll about controversial referee
-decisions (yellow and red cards and VAR reviews) during live football matches and
-records your response.
+VARdict ("the extension") helps fans follow live World Cup matches with anonymous
+polls on controversial referee decisions and community result summaries.
 
 ## What we collect
 
-When you answer a poll, the extension stores:
+**Viewer mode** — when you answer a poll, we store:
 
 - your choice ("Yes" or "No"), and
-- the question text describing the referee decision (for example, the card type,
-  the team, and the match minute).
+- the question text describing the referee decision (for example, card type, team,
+  and match minute).
 
-These responses are anonymous. The extension does not request or collect your name,
-email, account, location, or any personally identifiable information, and it does
-not build a profile of you.
+**Moments mode** — you do not submit votes. You may see aggregate results (totals and
+percentages) that were collected from other users in Viewer mode.
+
+All responses are anonymous. The extension does not request or collect your name,
+email, account, location, or any personally identifiable information, and it does not
+build a profile of you.
 
 ## What we do not collect
 
-- We do not read, store, or transmit the content of the web pages you visit. The
-  permission to run on websites is used only to display the poll overlay on the page
-  you are currently viewing.
+- We do not read, store, or transmit the content of web pages you visit. Host
+  permission is used only to display overlays on the page you are viewing, including
+  during fullscreen video.
 - We do not collect your browsing history.
 - We do not track you across sites and we do not show advertising.
 
 ## How the data is used
 
-Responses are used in aggregate to show and analyze public opinion on referee
-decisions. We do not sell your data and we do not use it for any unrelated purpose.
+Responses are used in aggregate to show community opinion on referee decisions (vote
+counts and percentage splits). We do not sell your data and we do not use it for any
+unrelated purpose.
 
 ## Where the data goes
 
-Poll responses are sent to our backend hosted on Supabase and stored there. Live
-match information is retrieved from a third-party football data provider through our
-server; no information identifying you is included in those requests.
+Poll responses and shared poll timing are sent to our backend on Supabase. Live match
+events are fetched through our server from a third-party football data provider. No
+information identifying you is included in those requests.
 
 ## Data retention
 
