@@ -3,6 +3,8 @@ let busy = false;
 let gamePickerOpen = false;
 let modePickerOpen = false;
 let currentMode = null;
+let syncInFlight = false;
+let breakdownWakeTimer = null;
 
 const voteQueue = [];
 const momentQueue = [];
@@ -31,7 +33,11 @@ function getOverlayRoot() {
 }
 
 function mountOverlay(el) {
-  getOverlayRoot().appendChild(el);
+  const root = getOverlayRoot();
+  if (root !== document.body && getComputedStyle(root).position === "static") {
+    root.style.position = "relative";
+  }
+  root.appendChild(el);
 }
 
 function reparentOverlayIfNeeded() {
@@ -138,18 +144,57 @@ function makeButton(className) {
 
 setInterval(syncTick, POLL.syncSeconds * 1000);
 
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes.enabled) return;
+  if (changes.enabled.newValue) {
+    syncTick();
+    return;
+  }
+  resetSessionState();
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) syncTick();
+});
+
+chrome.storage.local.get("enabled", ({ enabled }) => {
+  if (enabled) syncTick();
+});
+
+function resetSessionState() {
+  voteQueue.length = 0;
+  momentQueue.length = 0;
+  pendingBreakdowns.length = 0;
+  handled.clear();
+  voted.clear();
+  shownMoments.clear();
+  gamePickerOpen = false;
+  modePickerOpen = false;
+  currentMode = null;
+  syncInFlight = false;
+  if (breakdownWakeTimer) {
+    clearTimeout(breakdownWakeTimer);
+    breakdownWakeTimer = null;
+  }
+  if (overlayEl) clearOverlay();
+  busy = false;
+}
+
 function syncTick() {
-  if (document.hidden || overlayEl || busy || gamePickerOpen || modePickerOpen) return;
+  if (document.hidden || overlayEl || busy || gamePickerOpen || modePickerOpen || syncInFlight) {
+    return;
+  }
   if (!chrome.runtime || !chrome.runtime.id) return;
+  syncInFlight = true;
   try {
     chrome.storage.local.get("enabled", ({ enabled }) => {
       if (!enabled) {
-        gamePickerOpen = false;
-        modePickerOpen = false;
-        currentMode = null;
+        resetSessionState();
+        syncInFlight = false;
         return;
       }
       chrome.runtime.sendMessage({ type: "sync" }, (res) => {
+        syncInFlight = false;
         if (chrome.runtime.lastError) return;
         if (res && res.needModePick) {
           showModePicker();
@@ -167,13 +212,16 @@ function syncTick() {
         }
       });
     });
-  } catch (e) {}
+  } catch (e) {
+    syncInFlight = false;
+  }
 }
 
 function handleViewerSync(res) {
   ingestViewerPolls(res && res.activePolls ? res.activePolls : []);
   tryStartVote();
   tryStartBreakdown(true);
+  scheduleBreakdownWake();
 }
 
 function handleMomentsSync(res) {
@@ -181,6 +229,7 @@ function handleMomentsSync(res) {
   ingestMomentsBreakdownPolls(res && res.activePolls ? res.activePolls : []);
   tryStartGoalMoment();
   tryStartBreakdown(false);
+  scheduleBreakdownWake();
 }
 
 function ingestViewerPolls(polls) {
@@ -206,12 +255,13 @@ function ingestViewerPolls(polls) {
 
 function ingestMomentsBreakdownPolls(polls) {
   const now = Date.now();
+  const displayMs = POLL.countShowSeconds * 1000 + RESULTS_SHOW_MS;
   for (const poll of polls) {
     if (handled.has(poll.question)) continue;
     const opened = Date.parse(poll.openedAt);
     if (Number.isNaN(opened)) continue;
     const showAt = opened + POLL.resultsDelaySeconds * 1000;
-    if (now >= showAt + RESULTS_SHOW_MS) {
+    if (now >= showAt + displayMs) {
       handled.add(poll.question);
       continue;
     }
@@ -245,6 +295,28 @@ function scheduleBreakdown(question, opened, requireVote) {
   }
   pendingBreakdowns.push({ question, showAt });
   pendingBreakdowns.sort((a, b) => a.showAt - b.showAt);
+  scheduleBreakdownWake();
+}
+
+function scheduleBreakdownWake() {
+  if (breakdownWakeTimer) {
+    clearTimeout(breakdownWakeTimer);
+    breakdownWakeTimer = null;
+  }
+  if (!pendingBreakdowns.length || busy || overlayEl || gamePickerOpen || modePickerOpen) {
+    return;
+  }
+  const delay = Math.max(0, pendingBreakdowns[0].showAt - Date.now());
+  breakdownWakeTimer = setTimeout(() => {
+    breakdownWakeTimer = null;
+    if (currentMode === "moments") {
+      tryStartBreakdown(false);
+      tryStartGoalMoment();
+    } else if (currentMode === "viewer") {
+      tryStartBreakdown(true);
+      tryStartVote();
+    }
+  }, delay);
 }
 
 function tryStartVote() {
@@ -283,6 +355,7 @@ function tryStartBreakdown(requireVote) {
   showBreakdown(next.question, () => {
     handled.add(next.question);
     busy = false;
+    scheduleBreakdownWake();
     tryStartBreakdown(requireVote);
     tryStartGoalMoment();
     tryStartVote();
@@ -330,9 +403,14 @@ function showModePicker() {
     btn.addEventListener("click", () => {
       btn.disabled = true;
       chrome.runtime.sendMessage({ type: "selectMode", mode: mode.id }, () => {
+        if (chrome.runtime.lastError) {
+          btn.disabled = false;
+          return;
+        }
         modePickerOpen = false;
         busy = false;
         clearOverlay();
+        syncTick();
       });
     });
     content.appendChild(btn);
@@ -364,9 +442,14 @@ function showGamePicker(games) {
       chrome.runtime.sendMessage(
         { type: "selectGame", gameId: game.id, label: game.label },
         () => {
+          if (chrome.runtime.lastError) {
+            btn.disabled = false;
+            return;
+          }
           gamePickerOpen = false;
           busy = false;
           clearOverlay();
+          syncTick();
         }
       );
     });
@@ -398,10 +481,12 @@ function showPoll(poll, voteEnd, options) {
   let selected = null;
   let finalized = false;
   let confirmTimer = null;
+  let countdownTimer = null;
 
   const { el, content } = makeCard();
   overlayEl = el;
-  const msLeft = Math.max(1000, voteEnd - Date.now());
+  const voteEndMs = voteEnd;
+  const msLeft = Math.max(1000, voteEndMs - Date.now());
 
   div(content, poll.question, {
     fontSize: "18px",
@@ -460,12 +545,22 @@ function showPoll(poll, voteEnd, options) {
   mountOverlay(el);
   const maxTimer = setTimeout(finalize, msLeft);
 
+  countdownTimer = setInterval(() => {
+    if (finalized) return;
+    const secs = Math.ceil((voteEndMs - Date.now()) / 1000);
+    if (secs <= 0) return;
+    if (!confirmTimer) {
+      note.textContent = `You have ${secs} second${secs === 1 ? "" : "s"} to decide.`;
+    }
+  }, 1000);
+
   function finalize() {
     if (finalized) return;
     finalized = true;
     document.removeEventListener("keydown", onKey, true);
     clearTimeout(confirmTimer);
     clearTimeout(maxTimer);
+    clearInterval(countdownTimer);
     buttons.forEach((b) => (b.disabled = true));
 
     if (selected === null) {
@@ -509,6 +604,9 @@ function showPoll(poll, voteEnd, options) {
 function showBreakdown(question, done) {
   const { el, content } = makeCard();
   overlayEl = el;
+  let cancelled = false;
+  let countTimer = null;
+  let barTimer = null;
 
   div(content, question, {
     fontSize: "15px",
@@ -519,19 +617,26 @@ function showBreakdown(question, done) {
   const body = div(content, "Loading results…", { className: "vardict-muted", marginBottom: "0" });
   mountOverlay(el);
 
+  function finish() {
+    if (cancelled) return;
+    cancelled = true;
+    clearTimeout(countTimer);
+    clearTimeout(barTimer);
+    clearOverlay();
+    done();
+  }
+
   chrome.runtime.sendMessage({ type: "breakdown", question }, (res) => {
+    if (cancelled) return;
     if (chrome.runtime.lastError || !res || !res.ok || res.total <= POLL.resultsThreshold) {
-      clearOverlay();
-      done();
+      finish();
       return;
     }
     showVoteCounts(body, res.yes, res.no, res.total);
-    setTimeout(() => {
+    countTimer = setTimeout(() => {
+      if (cancelled) return;
       renderBar(body, res.yes, res.no, res.total);
-      setTimeout(() => {
-        clearOverlay();
-        done();
-      }, RESULTS_SHOW_MS);
+      barTimer = setTimeout(finish, RESULTS_SHOW_MS);
     }, POLL.countShowSeconds * 1000);
   });
 }

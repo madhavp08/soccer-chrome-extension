@@ -4,7 +4,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "sync") {
     sync()
       .then(sendResponse)
-      .catch(() => sendResponse({ activePolls: [] }));
+      .catch(() => sendResponse({ activePolls: [], goalMoments: [] }));
     return true;
   }
   if (msg && msg.type === "selectMode") {
@@ -108,14 +108,18 @@ async function registerNewEvents(gameId, afEventsLen, mode) {
 
   if (afEventsLen != null && !finished) {
     const fresh = events.slice(afEventsLen).filter((e) => triggers.includes(e.type));
+    const pollOpens = [];
     for (const event of fresh) {
       if (polls.includes(event.type)) {
         const poll = buildPoll(event);
-        await openPoll(gameId, poll.question);
+        pollOpens.push(openPoll(gameId, poll.question));
       }
       if (moments.includes(event.type)) {
         goalMoments.push(buildGoalMoment(event));
       }
+    }
+    if (pollOpens.length) {
+      await Promise.all(pollOpens);
     }
   }
 
@@ -132,11 +136,16 @@ async function openPoll(fixtureId, question) {
   if (anonKey.startsWith("ey")) {
     headers.Authorization = `Bearer ${anonKey}`;
   }
-  await fetch(`${url}/rest/v1/rpc/open_poll`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ p_fixture_id: fixtureId, p_question: question })
-  });
+  try {
+    const res = await fetch(`${url}/rest/v1/rpc/open_poll`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ p_fixture_id: fixtureId, p_question: question })
+    });
+    return res.ok;
+  } catch (e) {
+    return false;
+  }
 }
 
 async function fetchActivePolls(fixtureId) {
