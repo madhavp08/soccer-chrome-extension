@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "VARdict",
   "version": "1.0.0",
-  "description": "Vote on controversial calls in real time. While a poll is open: A or J for Yes, D or L for No.",
+  "description": "Vote on controversial calls in real time",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
