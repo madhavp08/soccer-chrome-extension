@@ -156,15 +156,20 @@ function ensureOverlayStyles() {
     .vardict-btn--block {
       display: block;
       width: 100%;
+      min-height: 44px;
       margin-bottom: 8px;
       padding: 12px;
       font-size: 14px;
       text-align: left;
+      box-sizing: border-box;
     }
     .vardict-btn--vote {
-      flex: 1;
+      flex: 1 1 0;
+      min-width: 0;
+      min-height: 44px;
       padding: 12px 0;
       font-size: 16px;
+      box-sizing: border-box;
     }
     .vardict-btn--selected {
       background: #2a2a2a;
