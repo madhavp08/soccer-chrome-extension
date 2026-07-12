@@ -42,6 +42,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch(() => sendResponse({ ok: false }));
     return true;
   }
+  if (msg && msg.type === "listLiveGames") {
+    listLiveGames()
+      .then((games) => sendResponse({ ok: true, games }))
+      .catch(() => sendResponse({ ok: false, games: [] }));
+    return true;
+  }
 });
 
 async function sync(sender) {
@@ -298,21 +304,21 @@ async function callProxy(query) {
 function buildPoll(event) {
   const team = event.team && event.team.name ? event.team.name : "";
   const player = event.player && event.player.name ? event.player.name : "";
-  const elapsed = event.time && event.time.elapsed != null ? event.time.elapsed : null;
-  const extra = event.time && event.time.extra ? `+${event.time.extra}` : "";
-  const minute = elapsed != null ? `${elapsed}${extra}'` : "";
   const detail = event.detail || (event.type === "Card" ? "Card" : "VAR review");
   const context = event.comments || "";
+  const who = [player, team].filter(Boolean).join(" ");
 
   if (event.type === "Card") {
-    const who = player ? `${player} (${team})` : team;
-    const when = minute ? `, ${minute}` : "";
-    return { question: `${detail} for ${who}${when} — right call?`, context };
+    return {
+      question: who ? `${detail} for ${who}.` : `${detail}.`,
+      context
+    };
   }
 
-  const where = team ? ` (${team})` : "";
-  const when = minute ? `, ${minute}` : "";
-  return { question: `VAR: ${detail}${where}${when} — do you agree?`, context };
+  if (who) {
+    return { question: `VAR ${detail} for ${who}.`, context };
+  }
+  return { question: `VAR ${detail}.`, context };
 }
 
 function buildGoalMoment(event) {
@@ -321,13 +327,11 @@ function buildGoalMoment(event) {
   const elapsed = event.time && event.time.elapsed != null ? event.time.elapsed : null;
   const extra = event.time && event.time.extra ? `+${event.time.extra}` : "";
   const minute = elapsed != null ? `${elapsed}${extra}'` : "";
-  const when = minute ? ` · ${minute}` : "";
-  const who = player ? `${player} (${team})` : team || "Unknown";
-  const detail = event.detail ? ` (${event.detail})` : "";
+  const who = [player, team].filter(Boolean).join(" ") || "Unknown";
 
   return {
     key: `goal:${minute}:${team}:${player}:${event.detail || ""}`,
-    text: `Goal${when}${detail} — ${who}`
+    text: minute ? `Goal for ${who}, ${minute}.` : `Goal for ${who}.`
   };
 }
 
@@ -403,7 +407,9 @@ async function getBreakdown(question) {
     ok: true,
     total: realTotal + fake.total,
     yes: realYes + fake.yes,
-    no: realNo + fake.no
+    no: realNo + fake.no,
+    valid: realYes + fake.yes,
+    invalid: realNo + fake.no
   };
 }
 

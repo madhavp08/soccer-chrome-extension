@@ -29,7 +29,7 @@ const FAKE_VOTES = {
 };
 
 const POLL = {
-  options: ["Yes", "No"],
+  options: ["Valid", "Invalid"],
   syncSeconds: 3,
   decisionSeconds: 20,
   confirmSeconds: 5,

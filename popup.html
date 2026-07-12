@@ -5,12 +5,21 @@
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
+    <nav id="tabs" class="tabs" hidden>
+      <button type="button" class="tab is-active" data-tab="main">VARdict</button>
+      <button type="button" class="tab" data-tab="games">Games</button>
+    </nav>
     <main class="card">
-      <label class="toggle-btn">
-        <input type="checkbox" id="enabled" class="toggle-input" />
-        <span class="toggle-label">VARdict</span>
-      </label>
-      <div id="dev-root"></div>
+      <section id="panel-main" class="panel">
+        <label class="toggle-btn">
+          <input type="checkbox" id="enabled" class="toggle-input" />
+          <span class="toggle-label">VARdict</span>
+        </label>
+        <div id="dev-root"></div>
+      </section>
+      <section id="panel-games" class="panel" hidden>
+        <div id="games-list" class="games-list"></div>
+      </section>
     </main>
     <script src="config.js"></script>
     <script src="popup.js"></script>

@@ -15,15 +15,15 @@ const handled = new Set();
 const voted = new Set();
 const shownMoments = new Set();
 
-const YES_COLOR = "#00b86b";
-const NO_COLOR = "#e5342b";
-const YES_KEYS = new Set(["a", "j"]);
-const NO_KEYS = new Set(["d", "l"]);
+const VALID_COLOR = "#00b86b";
+const INVALID_COLOR = "#e5342b";
+const VALID_KEYS = new Set(["a", "j"]);
+const INVALID_KEYS = new Set(["d", "l"]);
 const RESULTS_SHOW_MS = 6000;
 
 const PREVIEW = {
-  question: "Yellow card for Example Player (Team), 67' — right call?",
-  goal: "Goal · 67' — Example Player (Team)"
+  question: "Yellow Card for Example Player Example Team.",
+  goal: "Goal for Example Player Example Team, 67'."
 };
 
 ensureOverlayStyles();
@@ -117,8 +117,7 @@ function ensureOverlayStyles() {
       user-select: none;
     }
     .vardict-glass--compact .vardict-glass-inner {
-      padding: 14px 18px;
-      min-height: 0;
+      padding: 20px;
     }
     .vardict-heading {
       font-size: 17px;
@@ -243,6 +242,24 @@ chrome.storage.onChanged.addListener((changes, area) => {
     const saved = changes.overlayOffset.newValue;
     overlayOffset =
       saved && typeof saved.left === "number" && typeof saved.top === "number" ? saved : null;
+  }
+  if (changes.selectedGameId) {
+    voteQueue.length = 0;
+    momentQueue.length = 0;
+    pendingBreakdowns.length = 0;
+    handled.clear();
+    voted.clear();
+    shownMoments.clear();
+    pendingPenalty = null;
+    penaltyHandledKey = null;
+    if (breakdownWakeTimer) {
+      clearTimeout(breakdownWakeTimer);
+      breakdownWakeTimer = null;
+    }
+    if (overlayEl) clearOverlay();
+    busy = false;
+    gamePickerOpen = false;
+    if (!document.hidden) syncTick();
   }
   if (!changes.enabled) return;
   if (changes.enabled.newValue) {
@@ -503,11 +520,8 @@ function showGamePicker(games) {
   const { el, content } = makeCard({ draggable: false });
   overlayEl = el;
 
-  div(content, "Which match should VARdict follow?", {
+  div(content, "Pick a live match.", {
     className: "vardict-heading"
-  });
-  div(content, "You can change this only by turning VARdict off.", {
-    className: "vardict-muted"
   });
 
   games.forEach((game) => {
@@ -574,11 +588,10 @@ function showPenaltyPredict(shootout, done) {
   let finalized = false;
 
   const { el, content } = makeCard();
-  el.style.width = "380px";
   overlayEl = el;
 
   div(content, "Penalty shootout", { className: "vardict-heading" });
-  div(content, "Tap the shots you think will score. Green = goal, red = miss.", {
+  div(content, "Tap the shots you think will score.", {
     className: "vardict-muted"
   });
 
@@ -590,13 +603,13 @@ function showPenaltyPredict(shootout, done) {
 
   const note = div(content, "", { className: "vardict-muted", marginBottom: "10px" });
   const submit = makeButton("vardict-btn--block");
-  submit.textContent = "Lock in picks";
+  submit.textContent = "Submit";
   submit.style.textAlign = "center";
   content.appendChild(submit);
 
   function updateNote() {
     const secs = Math.max(0, Math.ceil((voteEnd - Date.now()) / 1000));
-    note.textContent = secs > 0 ? `${secs}s left to decide.` : "Time is up.";
+    note.textContent = secs > 0 ? `${secs}s` : "";
   }
   updateNote();
   const countdown = setInterval(updateNote, 1000);
@@ -604,9 +617,6 @@ function showPenaltyPredict(shootout, done) {
   function showCommunity(home, away) {
     content.textContent = "";
     div(content, "Community picks", { className: "vardict-heading" });
-    div(content, "Each shot is a goal if at least half the community picked it.", {
-      className: "vardict-muted"
-    });
     div(content, shootout.home, { className: "vardict-pen-team" });
     makePenDots(content, home, false);
     div(content, shootout.away, { className: "vardict-pen-team" });
@@ -678,7 +688,7 @@ function showPenaltyPredict(shootout, done) {
 }
 
 function showGoalMoment(moment, done) {
-  const { el, content } = makeCard({ compact: true });
+  const { el, content } = makeCard();
   overlayEl = el;
 
   div(content, moment.text, {
@@ -732,7 +742,7 @@ function showPoll(poll, voteEnd, options) {
     buttons.forEach((b) => {
       b.classList.toggle("vardict-btn--selected", b === btn);
     });
-    note.textContent = `Submitting in ${POLL.confirmSeconds}s unless you change it.`;
+    note.textContent = `Sending in ${POLL.confirmSeconds}s…`;
     clearTimeout(confirmTimer);
     confirmTimer = setTimeout(finalize, POLL.confirmSeconds * 1000);
   }
@@ -740,20 +750,22 @@ function showPoll(poll, voteEnd, options) {
   function onKey(e) {
     if (finalized) return;
     const k = e.key.toLowerCase();
-    if (YES_KEYS.has(k)) {
+    const validLabel = POLL.options[0] || "Valid";
+    const invalidLabel = POLL.options[1] || "Invalid";
+    if (VALID_KEYS.has(k)) {
       e.preventDefault();
       e.stopPropagation();
-      pick("Yes", buttons[0]);
-    } else if (NO_KEYS.has(k)) {
+      pick(validLabel, buttons[0]);
+    } else if (INVALID_KEYS.has(k)) {
       e.preventDefault();
       e.stopPropagation();
-      pick("No", buttons[1]);
+      pick(invalidLabel, buttons[1]);
     }
   }
 
   document.addEventListener("keydown", onKey, true);
 
-  const note = div(content, `You have ${Math.ceil(msLeft / 1000)} seconds to decide.`, {
+  const note = div(content, `${Math.ceil(msLeft / 1000)}s`, {
     className: "vardict-muted",
     marginTop: "16px",
     marginBottom: "0"
@@ -778,7 +790,7 @@ function showPoll(poll, voteEnd, options) {
     const secs = Math.ceil((voteEndMs - Date.now()) / 1000);
     if (secs <= 0) return;
     if (!confirmTimer) {
-      note.textContent = `You have ${secs} second${secs === 1 ? "" : "s"} to decide.`;
+      note.textContent = `${secs}s`;
     }
   }, 1000);
 
@@ -943,14 +955,14 @@ function enableDrag(el) {
 }
 
 function makeCard(options) {
-  const compact = options && options.compact;
   const draggable = !(options && options.draggable === false);
   const el = document.createElement("div");
-  el.className = compact ? "vardict-glass vardict-glass--compact" : "vardict-glass";
+  el.className = "vardict-glass";
   Object.assign(el.style, {
     position: "fixed",
     zIndex: "2147483647",
-    width: "340px",
+    width: "360px",
+    height: "260px",
     borderRadius: "12px",
     overflow: "hidden",
     fontFamily: "-apple-system, system-ui, sans-serif",
@@ -960,9 +972,11 @@ function makeCard(options) {
   const content = document.createElement("div");
   content.className = "vardict-glass-inner";
   Object.assign(content.style, {
-    padding: compact ? "14px 18px" : "20px",
-    minHeight: compact ? "0" : "150px",
-    boxSizing: "border-box"
+    padding: "20px",
+    width: "100%",
+    height: "100%",
+    boxSizing: "border-box",
+    overflow: "auto"
   });
   el.appendChild(content);
   if (draggable) enableDrag(el);
@@ -1007,11 +1021,11 @@ function showVoteCounts(body, yes, no, total) {
     fontWeight: "600"
   });
   const y = document.createElement("span");
-  y.textContent = `Yes ${yes}`;
-  y.style.color = YES_COLOR;
+  y.textContent = `Valid ${yes}`;
+  y.style.color = VALID_COLOR;
   const n = document.createElement("span");
-  n.textContent = `No ${no}`;
-  n.style.color = NO_COLOR;
+  n.textContent = `Invalid ${no}`;
+  n.style.color = INVALID_COLOR;
   row.appendChild(y);
   row.appendChild(n);
 }
@@ -1031,11 +1045,11 @@ function renderBar(body, yes, no, total) {
     marginBottom: "8px"
   });
   const y = document.createElement("span");
-  y.textContent = `Yes ${yesPct}%`;
-  y.style.color = YES_COLOR;
+  y.textContent = `Valid ${yesPct}%`;
+  y.style.color = VALID_COLOR;
   const n = document.createElement("span");
-  n.textContent = `No ${noPct}%`;
-  n.style.color = NO_COLOR;
+  n.textContent = `Invalid ${noPct}%`;
+  n.style.color = INVALID_COLOR;
   labels.appendChild(y);
   labels.appendChild(n);
 
@@ -1046,8 +1060,8 @@ function renderBar(body, yes, no, total) {
     overflow: "hidden",
     background: "#222222"
   });
-  div(bar, "", { width: `${yesPct}%`, background: YES_COLOR });
-  div(bar, "", { width: `${noPct}%`, background: NO_COLOR });
+  div(bar, "", { width: `${yesPct}%`, background: VALID_COLOR });
+  div(bar, "", { width: `${noPct}%`, background: INVALID_COLOR });
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

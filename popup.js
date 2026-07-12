@@ -1,6 +1,13 @@
 const checkbox = document.getElementById("enabled");
 const devRoot = document.getElementById("dev-root");
+const tabsEl = document.getElementById("tabs");
+const panelMain = document.getElementById("panel-main");
+const panelGames = document.getElementById("panel-games");
+const gamesList = document.getElementById("games-list");
 const devMode = typeof DEV_MODE !== "undefined" && DEV_MODE;
+
+let currentGameId = null;
+let liveGames = [];
 
 function setViewerTabAndEnable() {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -34,6 +41,78 @@ function turnOff() {
   });
 }
 
+function showTab(name) {
+  const isGames = name === "games";
+  panelMain.hidden = isGames;
+  panelGames.hidden = !isGames;
+  tabsEl.querySelectorAll(".tab").forEach((tab) => {
+    tab.classList.toggle("is-active", tab.dataset.tab === name);
+  });
+}
+
+function renderGamesList() {
+  gamesList.textContent = "";
+  if (!liveGames.length) {
+    const empty = document.createElement("div");
+    empty.className = "games-empty";
+    empty.textContent = "No live games.";
+    gamesList.appendChild(empty);
+    return;
+  }
+
+  liveGames.forEach((game) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "game-btn";
+    if (currentGameId != null && Number(currentGameId) === Number(game.id)) {
+      btn.classList.add("is-current");
+    }
+    btn.textContent = game.label;
+    btn.addEventListener("click", () => {
+      if (currentGameId != null && Number(currentGameId) === Number(game.id)) return;
+      btn.disabled = true;
+      chrome.runtime.sendMessage(
+        { type: "selectGame", gameId: game.id, label: game.label },
+        () => {
+          if (chrome.runtime.lastError) {
+            btn.disabled = false;
+            return;
+          }
+          currentGameId = game.id;
+          renderGamesList();
+          showTab("main");
+        }
+      );
+    });
+    gamesList.appendChild(btn);
+  });
+}
+
+function refreshGamesTab() {
+  if (!checkbox.checked) {
+    tabsEl.hidden = true;
+    showTab("main");
+    liveGames = [];
+    return;
+  }
+
+  chrome.runtime.sendMessage({ type: "listLiveGames" }, (res) => {
+    if (chrome.runtime.lastError || !res || !res.ok) {
+      tabsEl.hidden = true;
+      showTab("main");
+      return;
+    }
+    liveGames = Array.isArray(res.games) ? res.games : [];
+    const showGames = liveGames.length > 1;
+    tabsEl.hidden = !showGames;
+    if (!showGames) {
+      showTab("main");
+      return;
+    }
+    renderGamesList();
+  });
+}
+
 function sendPreview(kind) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const tab = tabs[0];
@@ -49,8 +128,14 @@ function sendPreview(kind) {
   });
 }
 
-chrome.storage.local.get("enabled").then(({ enabled }) => {
+tabsEl.querySelectorAll(".tab").forEach((tab) => {
+  tab.addEventListener("click", () => showTab(tab.dataset.tab));
+});
+
+chrome.storage.local.get(["enabled", "selectedGameId"]).then(({ enabled, selectedGameId }) => {
   checkbox.checked = Boolean(enabled);
+  currentGameId = selectedGameId != null ? selectedGameId : null;
+  refreshGamesTab();
 });
 
 checkbox.addEventListener("change", () => {
@@ -59,11 +144,18 @@ checkbox.addEventListener("change", () => {
   } else {
     turnOff();
   }
+  refreshGamesTab();
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.enabled) {
+  if (area !== "local") return;
+  if (changes.enabled) {
     checkbox.checked = Boolean(changes.enabled.newValue);
+    refreshGamesTab();
+  }
+  if (changes.selectedGameId) {
+    currentGameId = changes.selectedGameId.newValue != null ? changes.selectedGameId.newValue : null;
+    if (!tabsEl.hidden) renderGamesList();
   }
 });
 

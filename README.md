@@ -241,8 +241,8 @@ set search_path = public
 as $$
   select
     count(*) as total,
-    count(*) filter (where choice = 'Yes') as yes,
-    count(*) filter (where choice = 'No') as no
+    count(*) filter (where choice in ('Yes', 'Valid')) as yes,
+    count(*) filter (where choice in ('No', 'Invalid')) as no
   from votes
   where question = q;
 $$;
