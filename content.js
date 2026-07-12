@@ -1,4 +1,5 @@
 let overlayEl = null;
+let overlayCleanup = null;
 let busy = false;
 let gamePickerOpen = false;
 let presence = null;
@@ -7,6 +8,10 @@ let breakdownWakeTimer = null;
 let overlayOffset = null;
 let pendingPenalty = null;
 let penaltyHandledKey = null;
+let enabledCache = false;
+let syncTimer = null;
+const activeTimeouts = new Set();
+const activeIntervals = new Set();
 
 const voteQueue = [];
 const momentQueue = [];
@@ -20,11 +25,50 @@ const INVALID_COLOR = "#e5342b";
 const VALID_KEYS = new Set(["a", "j"]);
 const INVALID_KEYS = new Set(["d", "l"]);
 const RESULTS_SHOW_MS = 6000;
+const VOTE_SAVE_TIMEOUT_MS = 8000;
 
 const PREVIEW = {
   question: "Yellow Card for Example Player Example Team.",
   goal: "Goal for Example Player Example Team, 67'."
 };
+
+function trackTimeout(fn, ms) {
+  const id = setTimeout(() => {
+    activeTimeouts.delete(id);
+    fn();
+  }, ms);
+  activeTimeouts.add(id);
+  return id;
+}
+
+function trackInterval(fn, ms) {
+  const id = setInterval(fn, ms);
+  activeIntervals.add(id);
+  return id;
+}
+
+function clearTracked(id) {
+  if (id == null) return;
+  if (activeTimeouts.has(id)) {
+    clearTimeout(id);
+    activeTimeouts.delete(id);
+  }
+  if (activeIntervals.has(id)) {
+    clearInterval(id);
+    activeIntervals.delete(id);
+  }
+}
+
+function clearAllTracked() {
+  for (const id of activeTimeouts) clearTimeout(id);
+  for (const id of activeIntervals) clearInterval(id);
+  activeTimeouts.clear();
+  activeIntervals.clear();
+  if (breakdownWakeTimer) {
+    clearTimeout(breakdownWakeTimer);
+    breakdownWakeTimer = null;
+  }
+}
 
 ensureOverlayStyles();
 chrome.storage.local.get("overlayOffset", ({ overlayOffset: saved }) => {
@@ -80,6 +124,7 @@ function mountOverlay(el) {
 }
 
 function onFullscreenChange() {
+  ensureSyncTimer();
   reparentOverlayIfNeeded();
   if (!document.hidden && isOverlayHost()) syncTick();
 }
@@ -234,7 +279,17 @@ function makeButton(className) {
   return btn;
 }
 
-setInterval(syncTick, POLL.syncSeconds * 1000);
+function ensureSyncTimer() {
+  const want = window === window.top || isOverlayHost();
+  if (want && !syncTimer) {
+    syncTimer = setInterval(syncTick, POLL.syncSeconds * 1000);
+  } else if (!want && syncTimer) {
+    clearInterval(syncTimer);
+    syncTimer = null;
+  }
+}
+
+ensureSyncTimer();
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
@@ -244,29 +299,17 @@ chrome.storage.onChanged.addListener((changes, area) => {
       saved && typeof saved.left === "number" && typeof saved.top === "number" ? saved : null;
   }
   if (changes.selectedGameId) {
-    voteQueue.length = 0;
-    momentQueue.length = 0;
-    pendingBreakdowns.length = 0;
-    handled.clear();
-    voted.clear();
-    shownMoments.clear();
-    pendingPenalty = null;
-    penaltyHandledKey = null;
-    if (breakdownWakeTimer) {
-      clearTimeout(breakdownWakeTimer);
-      breakdownWakeTimer = null;
+    clearSessionQueues(true);
+    if (enabledCache && !document.hidden) syncTick();
+  }
+  if (changes.enabled) {
+    enabledCache = Boolean(changes.enabled.newValue);
+    if (enabledCache) {
+      syncTick();
+    } else {
+      resetSessionState();
     }
-    if (overlayEl) clearOverlay();
-    busy = false;
-    gamePickerOpen = false;
-    if (!document.hidden) syncTick();
   }
-  if (!changes.enabled) return;
-  if (changes.enabled.newValue) {
-    syncTick();
-    return;
-  }
-  resetSessionState();
 });
 
 document.addEventListener("visibilitychange", () => {
@@ -274,65 +317,65 @@ document.addEventListener("visibilitychange", () => {
 });
 
 chrome.storage.local.get("enabled", ({ enabled }) => {
-  if (enabled) syncTick();
+  enabledCache = Boolean(enabled);
+  if (enabledCache) syncTick();
 });
 
-function resetSessionState() {
+function clearSessionQueues(keepPresence) {
   voteQueue.length = 0;
   momentQueue.length = 0;
   pendingBreakdowns.length = 0;
   handled.clear();
   voted.clear();
   shownMoments.clear();
-  gamePickerOpen = false;
-  presence = null;
-  syncInFlight = false;
   pendingPenalty = null;
   penaltyHandledKey = null;
-  if (breakdownWakeTimer) {
-    clearTimeout(breakdownWakeTimer);
-    breakdownWakeTimer = null;
-  }
+  gamePickerOpen = false;
+  syncInFlight = false;
+  clearAllTracked();
   if (overlayEl) clearOverlay();
   busy = false;
+  if (!keepPresence) presence = null;
+}
+
+function resetSessionState() {
+  clearSessionQueues(false);
 }
 
 function syncTick() {
+  ensureSyncTimer();
   if (!isOverlayHost() || document.hidden || overlayEl || busy || gamePickerOpen || syncInFlight) {
     return;
   }
   if (!chrome.runtime || !chrome.runtime.id) return;
+  if (!enabledCache) return;
+
   syncInFlight = true;
   try {
-    chrome.storage.local.get("enabled", ({ enabled }) => {
-      if (!enabled) {
+    chrome.runtime.sendMessage({ type: "sync" }, (res) => {
+      syncInFlight = false;
+      if (chrome.runtime.lastError) return;
+      if (!enabledCache) return;
+      if (res && res.matchOver) {
+        enabledCache = false;
         resetSessionState();
-        syncInFlight = false;
         return;
       }
-      chrome.runtime.sendMessage({ type: "sync" }, (res) => {
-        syncInFlight = false;
-        if (chrome.runtime.lastError) return;
-        if (res && res.matchOver) {
-          resetSessionState();
-          return;
-        }
-        if (res && res.needGamePick && res.games && res.games.length) {
-          showGamePicker(res.games);
-          return;
-        }
-        presence = res && res.presence === "watching" ? "watching" : "away";
-        if (res && res.penaltyShootout) {
-          queuePenalty(res.penaltyShootout);
-        }
-        if (presence === "away") {
-          handleAwaySync(res);
-        } else {
-          handleWatchingSync(res);
-        }
-      });
+      if (res && res.needGamePick && res.games && res.games.length) {
+        showGamePicker(res.games);
+        return;
+      }
+      presence = res && res.presence === "watching" ? "watching" : "away";
+      if (res && res.penaltyShootout) {
+        queuePenalty(res.penaltyShootout);
+      }
+      if (presence === "away") {
+        handleAwaySync(res);
+      } else {
+        handleWatchingSync(res);
+      }
     });
-  } catch (e) {
+  } catch (_e) {
     syncInFlight = false;
   }
 }
@@ -470,15 +513,17 @@ function scheduleBreakdownWake() {
 }
 
 function tryStartVote() {
-  if (busy || overlayEl || gamePickerOpen || pendingPenalty || !voteQueue.length) return;
-  const poll = voteQueue.shift();
-  const voteEnd = poll.opened + POLL.decisionSeconds * 1000;
-  if (Date.now() >= voteEnd) {
-    handled.add(poll.question);
+  while (!busy && !overlayEl && !gamePickerOpen && !pendingPenalty && voteQueue.length) {
+    const poll = voteQueue.shift();
+    const voteEnd = poll.opened + POLL.decisionSeconds * 1000;
+    if (Date.now() >= voteEnd) {
+      handled.add(poll.question);
+      continue;
+    }
+    busy = true;
+    showPoll(poll, voteEnd);
     return;
   }
-  busy = true;
-  showPoll(poll, voteEnd);
 }
 
 function tryStartGoalMoment() {
@@ -612,7 +657,7 @@ function showPenaltyPredict(shootout, done) {
     note.textContent = secs > 0 ? `${secs}s` : "";
   }
   updateNote();
-  const countdown = setInterval(updateNote, 1000);
+  const countdown = trackInterval(updateNote, 1000);
 
   function showCommunity(home, away) {
     content.textContent = "";
@@ -621,7 +666,7 @@ function showPenaltyPredict(shootout, done) {
     makePenDots(content, home, false);
     div(content, shootout.away, { className: "vardict-pen-team" });
     makePenDots(content, away, false);
-    setTimeout(() => {
+    trackTimeout(() => {
       clearOverlay();
       done();
     }, resultsMs);
@@ -636,6 +681,13 @@ function showPenaltyPredict(shootout, done) {
         away: shootout.away
       },
       (res) => {
+        if (chrome.runtime.lastError) {
+          showCommunity(
+            [false, false, false, false, false],
+            [false, false, false, false, false]
+          );
+          return;
+        }
         const home =
           res && res.ok && Array.isArray(res.home) ? res.home : [false, false, false, false, false];
         const away =
@@ -648,8 +700,8 @@ function showPenaltyPredict(shootout, done) {
   function finalize(save) {
     if (finalized) return;
     finalized = true;
-    clearInterval(countdown);
-    clearTimeout(maxTimer);
+    clearTracked(countdown);
+    clearTracked(maxTimer);
     submit.disabled = true;
     content.querySelectorAll(".vardict-pen-dot").forEach((d) => {
       d.disabled = true;
@@ -661,6 +713,13 @@ function showPenaltyPredict(shootout, done) {
     }
 
     note.textContent = "Saving…";
+    let settled = false;
+    const failSafe = trackTimeout(() => {
+      if (settled) return;
+      settled = true;
+      fetchAndShowCommunity();
+    }, VOTE_SAVE_TIMEOUT_MS);
+
     chrome.runtime.sendMessage(
       {
         type: "penaltyVote",
@@ -671,17 +730,23 @@ function showPenaltyPredict(shootout, done) {
         awayShots
       },
       () => {
+        if (settled) return;
+        settled = true;
+        clearTracked(failSafe);
         fetchAndShowCommunity();
       }
     );
   }
 
   submit.addEventListener("click", () => finalize(true));
-  const maxTimer = setTimeout(() => finalize(false), Math.max(1000, voteEnd - Date.now()));
+  const maxTimer = trackTimeout(
+    () => finalize(false),
+    Math.max(1000, voteEnd - Date.now())
+  );
 
   if (!mountOverlay(el)) {
-    clearInterval(countdown);
-    clearTimeout(maxTimer);
+    clearTracked(countdown);
+    clearTracked(maxTimer);
     overlayEl = null;
     done();
   }
@@ -703,7 +768,7 @@ function showGoalMoment(moment, done) {
     done();
     return;
   }
-  setTimeout(() => {
+  trackTimeout(() => {
     clearOverlay();
     done();
   }, POLL.momentShowSeconds * 1000);
@@ -743,8 +808,8 @@ function showPoll(poll, voteEnd, options) {
       b.classList.toggle("vardict-btn--selected", b === btn);
     });
     note.textContent = `Sending in ${POLL.confirmSeconds}s…`;
-    clearTimeout(confirmTimer);
-    confirmTimer = setTimeout(finalize, POLL.confirmSeconds * 1000);
+    clearTracked(confirmTimer);
+    confirmTimer = trackTimeout(finalize, POLL.confirmSeconds * 1000);
   }
 
   function onKey(e) {
@@ -781,11 +846,12 @@ function showPoll(poll, voteEnd, options) {
     document.removeEventListener("keydown", onKey, true);
     overlayEl = null;
     busy = false;
+    tryStartVote();
     return;
   }
-  const maxTimer = setTimeout(finalize, msLeft);
+  const maxTimer = trackTimeout(finalize, msLeft);
 
-  countdownTimer = setInterval(() => {
+  countdownTimer = trackInterval(() => {
     if (finalized) return;
     const secs = Math.ceil((voteEndMs - Date.now()) / 1000);
     if (secs <= 0) return;
@@ -794,47 +860,75 @@ function showPoll(poll, voteEnd, options) {
     }
   }, 1000);
 
+  overlayCleanup = () => {
+    document.removeEventListener("keydown", onKey, true);
+    clearTracked(confirmTimer);
+    clearTracked(maxTimer);
+    clearTracked(countdownTimer);
+  };
+
+  function finishVoteUi(next) {
+    clearOverlay();
+    busy = false;
+    if (next) next();
+  }
+
   function finalize() {
     if (finalized) return;
     finalized = true;
-    document.removeEventListener("keydown", onKey, true);
-    clearTimeout(confirmTimer);
-    clearTimeout(maxTimer);
-    clearInterval(countdownTimer);
+    if (overlayCleanup) {
+      overlayCleanup();
+      overlayCleanup = null;
+    }
     buttons.forEach((b) => (b.disabled = true));
 
     if (selected === null) {
-      clearOverlay();
       if (!preview) handled.add(poll.question);
-      busy = false;
-      if (!preview) tryStartVote();
+      finishVoteUi(() => {
+        if (!preview) tryStartVote();
+      });
       return;
     }
 
     if (preview) {
       status.textContent = `Preview: ${selected} (not saved)`;
-      setTimeout(() => {
-        clearOverlay();
-        busy = false;
-      }, 800);
+      trackTimeout(() => finishVoteUi(null), 800);
       return;
     }
 
     status.textContent = "Saving…";
+    let settled = false;
+    const failSafe = trackTimeout(() => {
+      if (settled) return;
+      settled = true;
+      status.textContent = "Could not save your vote.";
+      voted.add(poll.question);
+      scheduleViewerBreakdown(poll.question, poll.opened);
+      trackTimeout(() => {
+        finishVoteUi(() => {
+          tryStartBreakdown(true);
+          tryStartVote();
+        });
+      }, 800);
+    }, VOTE_SAVE_TIMEOUT_MS);
+
     chrome.runtime.sendMessage(
       { type: "vote", choice: selected, question: poll.question },
       (res) => {
+        if (settled) return;
+        settled = true;
+        clearTracked(failSafe);
         voted.add(poll.question);
         status.textContent =
           !chrome.runtime.lastError && res && res.ok
             ? `Recorded: ${selected}`
             : "Could not save your vote.";
         scheduleViewerBreakdown(poll.question, poll.opened);
-        setTimeout(() => {
-          clearOverlay();
-          busy = false;
-          tryStartBreakdown(true);
-          tryStartVote();
+        trackTimeout(() => {
+          finishVoteUi(() => {
+            tryStartBreakdown(true);
+            tryStartVote();
+          });
         }, 800);
       }
     );
@@ -865,8 +959,8 @@ function showBreakdown(question, done) {
   function finish() {
     if (cancelled) return;
     cancelled = true;
-    clearTimeout(countTimer);
-    clearTimeout(barTimer);
+    clearTracked(countTimer);
+    clearTracked(barTimer);
     clearOverlay();
     done();
   }
@@ -878,18 +972,22 @@ function showBreakdown(question, done) {
       return;
     }
     showVoteCounts(body, res.yes, res.no, res.total);
-    countTimer = setTimeout(() => {
+    countTimer = trackTimeout(() => {
       if (cancelled) return;
       renderBar(body, res.yes, res.no, res.total);
-      barTimer = setTimeout(finish, RESULTS_SHOW_MS);
+      barTimer = trackTimeout(finish, RESULTS_SHOW_MS);
     }, POLL.countShowSeconds * 1000);
   });
 }
 
 function applyOverlayPosition(el) {
   if (overlayOffset) {
-    el.style.left = `${overlayOffset.left}px`;
-    el.style.top = `${overlayOffset.top}px`;
+    const maxLeft = Math.max(0, window.innerWidth - 340);
+    const maxTop = Math.max(0, window.innerHeight - 80);
+    const left = Math.min(maxLeft, Math.max(0, overlayOffset.left));
+    const top = Math.min(maxTop, Math.max(0, overlayOffset.top));
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
     el.style.right = "auto";
     el.style.transform = "none";
     return;
@@ -905,6 +1003,15 @@ function enableDrag(el) {
   let startY = 0;
   let originLeft = 0;
   let originTop = 0;
+  let raf = 0;
+  let pendingLeft = 0;
+  let pendingTop = 0;
+
+  function flushMove() {
+    raf = 0;
+    el.style.left = `${pendingLeft}px`;
+    el.style.top = `${pendingTop}px`;
+  }
 
   function onPointerDown(e) {
     if (e.button != null && e.button !== 0) return;
@@ -927,16 +1034,19 @@ function enableDrag(el) {
     if (!dragging) return;
     const maxLeft = Math.max(0, window.innerWidth - el.offsetWidth);
     const maxTop = Math.max(0, window.innerHeight - el.offsetHeight);
-    const left = Math.min(maxLeft, Math.max(0, originLeft + (e.clientX - startX)));
-    const top = Math.min(maxTop, Math.max(0, originTop + (e.clientY - startY)));
-    el.style.left = `${left}px`;
-    el.style.top = `${top}px`;
+    pendingLeft = Math.min(maxLeft, Math.max(0, originLeft + (e.clientX - startX)));
+    pendingTop = Math.min(maxTop, Math.max(0, originTop + (e.clientY - startY)));
+    if (!raf) raf = requestAnimationFrame(flushMove);
   }
 
   function onPointerUp(e) {
     if (!dragging) return;
     dragging = false;
     el.classList.remove("vardict-dragging");
+    if (raf) {
+      cancelAnimationFrame(raf);
+      flushMove();
+    }
     try {
       el.releasePointerCapture(e.pointerId);
     } catch (_err) {
@@ -994,6 +1104,14 @@ function div(parent, text, styles) {
 }
 
 function clearOverlay() {
+  if (typeof overlayCleanup === "function") {
+    try {
+      overlayCleanup();
+    } catch (_err) {
+      /* ignore */
+    }
+    overlayCleanup = null;
+  }
   if (overlayEl && overlayEl.parentNode) {
     overlayEl.parentNode.removeChild(overlayEl);
   }
@@ -1028,6 +1146,10 @@ function showVoteCounts(body, yes, no, total) {
 }
 
 function renderBar(body, yes, no, total) {
+  if (!total) {
+    body.textContent = "";
+    return;
+  }
   const yesPct = Math.round((yes / total) * 100);
   const noPct = 100 - yesPct;
 
@@ -1122,9 +1244,9 @@ function showPreviewBreakdown(question, done) {
     return;
   }
   showVoteCounts(body, 62, 38, 100);
-  setTimeout(() => {
+  trackTimeout(() => {
     renderBar(body, 62, 38, 100);
-    setTimeout(() => {
+    trackTimeout(() => {
       clearOverlay();
       done();
     }, RESULTS_SHOW_MS);

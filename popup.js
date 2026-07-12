@@ -101,7 +101,7 @@ function renderGamesList() {
 }
 
 function refreshGamesTab() {
-  if (!checkbox.checked) {
+  if (!checkbox || !checkbox.checked) {
     tabsEl.hidden = true;
     showTab("main");
     liveGames = [];
