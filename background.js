@@ -2,20 +2,9 @@ importScripts("config.js");
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "sync") {
-    sync()
+    sync(sender)
       .then(sendResponse)
-      .catch(() => sendResponse({ activePolls: [], goalMoments: [] }));
-    return true;
-  }
-  if (msg && msg.type === "selectMode") {
-    if (!MODES[msg.mode]) {
-      sendResponse({ ok: false });
-      return;
-    }
-    chrome.storage.local
-      .set({ vardictMode: msg.mode, afEventsLen: null })
-      .then(() => sendResponse({ ok: true }))
-      .catch(() => sendResponse({ ok: false }));
+      .catch(() => sendResponse({ activePolls: [], goalMoments: [], presence: "away" }));
     return true;
   }
   if (msg && msg.type === "selectGame") {
@@ -43,20 +32,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-async function sync() {
-  const { enabled, selectedGameId, afEventsLen, vardictMode } = await chrome.storage.local.get([
+async function sync(sender) {
+  const { enabled, selectedGameId, afEventsLen } = await chrome.storage.local.get([
     "enabled",
     "selectedGameId",
-    "afEventsLen",
-    "vardictMode"
+    "afEventsLen"
   ]);
-  if (!enabled) return { activePolls: [] };
-  if (!vardictMode || !MODES[vardictMode]) return { needModePick: true, activePolls: [] };
+  if (!enabled) return { activePolls: [], goalMoments: [], presence: "away" };
+
+  const presence = await resolvePresence(sender);
 
   let gameId = selectedGameId;
   if (!gameId) {
     const games = await listLiveGames();
-    if (!games.length) return { mode: vardictMode, activePolls: [], goalMoments: [] };
+    if (!games.length) return { presence, activePolls: [], goalMoments: [] };
     if (games.length === 1) {
       gameId = games[0].id;
       await chrome.storage.local.set({
@@ -65,69 +54,112 @@ async function sync() {
         afEventsLen: null
       });
     } else {
-      return { needGamePick: true, mode: vardictMode, games, activePolls: [], goalMoments: [] };
+      return { needGamePick: true, presence, games, activePolls: [], goalMoments: [] };
     }
   }
 
-  const goalMoments = await registerNewEvents(gameId, afEventsLen, vardictMode);
+  const { finished } = await registerNewEvents(gameId, afEventsLen);
+  if (finished) {
+    await turnOffAfterMatch();
+    return { presence, activePolls: [], goalMoments: [], matchOver: true };
+  }
+
   const activePolls = await fetchActivePolls(gameId);
+  const goalMoments = presence === "away" ? await listPendingGoalMoments() : [];
   return {
-    mode: vardictMode,
+    presence,
     activePolls,
-    goalMoments: vardictMode === "moments" ? goalMoments : []
+    goalMoments
   };
 }
 
-function pollEventTypes(mode) {
-  if (mode === "moments") {
-    return MODES.moments.pollTypes || ["Card", "Var"];
+async function resolvePresence(sender) {
+  const tabId = sender && sender.tab && typeof sender.tab.id === "number" ? sender.tab.id : null;
+  let { viewerTabId } = await chrome.storage.local.get("viewerTabId");
+  if (viewerTabId == null && tabId != null) {
+    await chrome.storage.local.set({ viewerTabId: tabId });
+    viewerTabId = tabId;
   }
-  return triggersForMode(mode);
+  if (tabId != null && tabId === viewerTabId) return "watching";
+  return "away";
 }
 
-function momentEventTypes(mode) {
-  if (mode !== "moments") return [];
-  return MODES.moments.momentTypes || ["Goal"];
+async function turnOffAfterMatch() {
+  await chrome.storage.local.set({
+    enabled: false,
+    selectedGameId: null,
+    selectedGameLabel: null,
+    afEventsLen: null,
+    viewerTabId: null,
+    pendingGoalMoments: [],
+    vardictMode: null
+  });
 }
 
-function triggersForMode(mode) {
-  return MODES[mode] ? MODES[mode].triggerTypes : [];
+const GOAL_MOMENT_TTL_MS = 120000;
+
+async function rememberGoalMoments(moments) {
+  if (!moments.length) return;
+  const now = Date.now();
+  const { pendingGoalMoments = [] } = await chrome.storage.local.get("pendingGoalMoments");
+  const byKey = new Map();
+  for (const m of pendingGoalMoments) {
+    if (m && m.key && now - (m.at || 0) < GOAL_MOMENT_TTL_MS) byKey.set(m.key, m);
+  }
+  for (const m of moments) {
+    if (!m || !m.key) continue;
+    byKey.set(m.key, { key: m.key, text: m.text, at: now });
+  }
+  await chrome.storage.local.set({ pendingGoalMoments: [...byKey.values()] });
 }
 
-async function registerNewEvents(gameId, afEventsLen, mode) {
+async function listPendingGoalMoments() {
+  const now = Date.now();
+  const { pendingGoalMoments = [] } = await chrome.storage.local.get("pendingGoalMoments");
+  const live = pendingGoalMoments.filter((m) => m && m.key && now - (m.at || 0) < GOAL_MOMENT_TTL_MS);
+  if (live.length !== pendingGoalMoments.length) {
+    await chrome.storage.local.set({ pendingGoalMoments: live });
+  }
+  return live.map(({ key, text }) => ({ key, text }));
+}
+
+async function registerNewEvents(gameId, afEventsLen) {
   const data = await fetchFixture(gameId);
-  if (!data) return [];
+  if (!data) return { finished: false };
 
   const events = Array.isArray(data.events) ? data.events : [];
   const status = data.fixture && data.fixture.status ? data.fixture.status.short : "";
   const finished = APIFOOTBALL_CONFIG.finishedStatuses.includes(status);
-  const triggers = triggersForMode(mode);
-  const polls = pollEventTypes(mode);
-  const moments = momentEventTypes(mode);
+  const voteTypes = EVENT_TYPES.vote || ["Card", "Var"];
+  const alertTypes = EVENT_TYPES.alert || ["Goal"];
   const goalMoments = [];
 
-  if (afEventsLen != null && !finished) {
-    const fresh = events.slice(afEventsLen).filter((e) => triggers.includes(e.type));
+  if (finished) {
+    return { finished: true };
+  }
+
+  if (afEventsLen != null) {
+    const fresh = events.slice(afEventsLen);
     const pollOpens = [];
     for (const event of fresh) {
-      if (polls.includes(event.type)) {
+      if (voteTypes.includes(event.type)) {
         const poll = buildPoll(event);
         pollOpens.push(openPoll(gameId, poll.question));
       }
-      if (moments.includes(event.type)) {
+      if (alertTypes.includes(event.type)) {
         goalMoments.push(buildGoalMoment(event));
       }
     }
     if (pollOpens.length) {
       await Promise.all(pollOpens);
     }
+    if (goalMoments.length) {
+      await rememberGoalMoments(goalMoments);
+    }
   }
 
-  if (!finished) {
-    await chrome.storage.local.set({ afEventsLen: events.length });
-  }
-
-  return goalMoments;
+  await chrome.storage.local.set({ afEventsLen: events.length });
+  return { finished: false };
 }
 
 async function openPoll(fixtureId, question) {
@@ -258,6 +290,26 @@ async function submitVote(choice, question) {
   }
 }
 
+function hashString(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function seededFakeVotes(question) {
+  const min = FAKE_VOTES && FAKE_VOTES.min != null ? FAKE_VOTES.min : 18;
+  const max = FAKE_VOTES && FAKE_VOTES.max != null ? FAKE_VOTES.max : 36;
+  const h = hashString(question || "");
+  const span = Math.max(0, max - min);
+  const total = min + (h % (span + 1));
+  const yesPct = 38 + (h % 25);
+  const yes = Math.round((total * yesPct) / 100);
+  return { total, yes, no: total - yes };
+}
+
 async function getBreakdown(question) {
   const { url, anonKey } = SUPABASE_CONFIG;
 
@@ -277,10 +329,15 @@ async function getBreakdown(question) {
   const row = Array.isArray(data) ? data[0] : data;
   if (!row) return { ok: false };
 
+  const realTotal = Number(row.total) || 0;
+  const realYes = Number(row.yes) || 0;
+  const realNo = Number(row.no) || 0;
+  const fake = seededFakeVotes(question);
+
   return {
     ok: true,
-    total: Number(row.total) || 0,
-    yes: Number(row.yes) || 0,
-    no: Number(row.no) || 0
+    total: realTotal + fake.total,
+    yes: realYes + fake.yes,
+    no: realNo + fake.no
   };
 }

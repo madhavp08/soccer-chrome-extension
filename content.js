@@ -1,10 +1,10 @@
 let overlayEl = null;
 let busy = false;
 let gamePickerOpen = false;
-let modePickerOpen = false;
-let currentMode = null;
+let presence = null;
 let syncInFlight = false;
 let breakdownWakeTimer = null;
+let overlayOffset = null;
 
 const voteQueue = [];
 const momentQueue = [];
@@ -25,24 +25,72 @@ const PREVIEW = {
 };
 
 ensureOverlayStyles();
-document.addEventListener("fullscreenchange", reparentOverlayIfNeeded);
-document.addEventListener("webkitfullscreenchange", reparentOverlayIfNeeded);
+chrome.storage.local.get("overlayOffset", ({ overlayOffset: saved }) => {
+  if (saved && typeof saved.left === "number" && typeof saved.top === "number") {
+    overlayOffset = saved;
+  }
+});
+
+document.addEventListener("fullscreenchange", onFullscreenChange);
+document.addEventListener("webkitfullscreenchange", onFullscreenChange);
+
+function isOverlayHost() {
+  const fs = document.fullscreenElement || document.webkitFullscreenElement;
+  if (window !== window.top) {
+    return Boolean(fs);
+  }
+  if (fs && String(fs.tagName).toUpperCase() === "IFRAME") {
+    return false;
+  }
+  return true;
+}
 
 function getOverlayRoot() {
-  return document.fullscreenElement || document.webkitFullscreenElement || document.body;
+  const fs = document.fullscreenElement || document.webkitFullscreenElement;
+  if (!fs) return document.body;
+  const tag = String(fs.tagName).toUpperCase();
+  if (tag === "IFRAME") return null;
+  if (tag === "VIDEO" || tag === "AUDIO") {
+    const host = fs.parentElement;
+    return host || document.body;
+  }
+  return fs;
+}
+
+function prepareOverlayRoot(root) {
+  if (!root || root === document.body) return;
+  const style = getComputedStyle(root);
+  if (style.position === "static") {
+    root.style.position = "relative";
+  }
+  if (style.overflow === "hidden" || style.overflow === "clip") {
+    root.dataset.vardictOverflow = style.overflow;
+    root.style.overflow = "visible";
+  }
 }
 
 function mountOverlay(el) {
   const root = getOverlayRoot();
-  if (root !== document.body && getComputedStyle(root).position === "static") {
-    root.style.position = "relative";
-  }
+  if (!root) return false;
+  prepareOverlayRoot(root);
   root.appendChild(el);
+  return true;
+}
+
+function onFullscreenChange() {
+  reparentOverlayIfNeeded();
+  if (!document.hidden && isOverlayHost()) syncTick();
 }
 
 function reparentOverlayIfNeeded() {
   if (!overlayEl || !overlayEl.parentNode) return;
   const root = getOverlayRoot();
+  if (!root) {
+    clearOverlay();
+    busy = false;
+    return;
+  }
+  prepareOverlayRoot(root);
   if (overlayEl.parentNode !== root) {
     root.appendChild(overlayEl);
   }
@@ -59,6 +107,12 @@ function ensureOverlayStyles() {
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
       color: #ffffff;
       -webkit-font-smoothing: antialiased;
+      cursor: grab;
+      touch-action: none;
+    }
+    .vardict-glass.vardict-dragging {
+      cursor: grabbing;
+      user-select: none;
     }
     .vardict-glass--compact .vardict-glass-inner {
       padding: 14px 18px;
@@ -145,7 +199,13 @@ function makeButton(className) {
 setInterval(syncTick, POLL.syncSeconds * 1000);
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local" || !changes.enabled) return;
+  if (area !== "local") return;
+  if (changes.overlayOffset) {
+    const saved = changes.overlayOffset.newValue;
+    overlayOffset =
+      saved && typeof saved.left === "number" && typeof saved.top === "number" ? saved : null;
+  }
+  if (!changes.enabled) return;
   if (changes.enabled.newValue) {
     syncTick();
     return;
@@ -169,8 +229,7 @@ function resetSessionState() {
   voted.clear();
   shownMoments.clear();
   gamePickerOpen = false;
-  modePickerOpen = false;
-  currentMode = null;
+  presence = null;
   syncInFlight = false;
   if (breakdownWakeTimer) {
     clearTimeout(breakdownWakeTimer);
@@ -181,7 +240,7 @@ function resetSessionState() {
 }
 
 function syncTick() {
-  if (document.hidden || overlayEl || busy || gamePickerOpen || modePickerOpen || syncInFlight) {
+  if (!isOverlayHost() || document.hidden || overlayEl || busy || gamePickerOpen || syncInFlight) {
     return;
   }
   if (!chrome.runtime || !chrome.runtime.id) return;
@@ -196,19 +255,19 @@ function syncTick() {
       chrome.runtime.sendMessage({ type: "sync" }, (res) => {
         syncInFlight = false;
         if (chrome.runtime.lastError) return;
-        if (res && res.needModePick) {
-          showModePicker();
+        if (res && res.matchOver) {
+          resetSessionState();
           return;
         }
         if (res && res.needGamePick && res.games && res.games.length) {
           showGamePicker(res.games);
           return;
         }
-        currentMode = res && res.mode ? res.mode : null;
-        if (currentMode === "moments") {
-          handleMomentsSync(res);
-        } else if (currentMode === "viewer") {
-          handleViewerSync(res);
+        presence = res && res.presence === "watching" ? "watching" : "away";
+        if (presence === "away") {
+          handleAwaySync(res);
+        } else {
+          handleWatchingSync(res);
         }
       });
     });
@@ -217,16 +276,16 @@ function syncTick() {
   }
 }
 
-function handleViewerSync(res) {
+function handleWatchingSync(res) {
   ingestViewerPolls(res && res.activePolls ? res.activePolls : []);
   tryStartVote();
   tryStartBreakdown(true);
   scheduleBreakdownWake();
 }
 
-function handleMomentsSync(res) {
+function handleAwaySync(res) {
   ingestGoalMoments(res && res.goalMoments ? res.goalMoments : []);
-  ingestMomentsBreakdownPolls(res && res.activePolls ? res.activePolls : []);
+  ingestAwayBreakdownPolls(res && res.activePolls ? res.activePolls : []);
   tryStartGoalMoment();
   tryStartBreakdown(false);
   scheduleBreakdownWake();
@@ -253,7 +312,7 @@ function ingestViewerPolls(polls) {
   }
 }
 
-function ingestMomentsBreakdownPolls(polls) {
+function ingestAwayBreakdownPolls(polls) {
   const now = Date.now();
   const displayMs = POLL.countShowSeconds * 1000 + RESULTS_SHOW_MS;
   for (const poll of polls) {
@@ -265,7 +324,7 @@ function ingestMomentsBreakdownPolls(polls) {
       handled.add(poll.question);
       continue;
     }
-    scheduleMomentsBreakdown(poll.question, opened);
+    scheduleAwayBreakdown(poll.question, opened);
   }
 }
 
@@ -281,7 +340,7 @@ function scheduleViewerBreakdown(question, opened) {
   scheduleBreakdown(question, opened, true);
 }
 
-function scheduleMomentsBreakdown(question, opened) {
+function scheduleAwayBreakdown(question, opened) {
   scheduleBreakdown(question, opened, false);
 }
 
@@ -303,16 +362,16 @@ function scheduleBreakdownWake() {
     clearTimeout(breakdownWakeTimer);
     breakdownWakeTimer = null;
   }
-  if (!pendingBreakdowns.length || busy || overlayEl || gamePickerOpen || modePickerOpen) {
+  if (!pendingBreakdowns.length || busy || overlayEl || gamePickerOpen) {
     return;
   }
   const delay = Math.max(0, pendingBreakdowns[0].showAt - Date.now());
   breakdownWakeTimer = setTimeout(() => {
     breakdownWakeTimer = null;
-    if (currentMode === "moments") {
+    if (presence === "away") {
       tryStartBreakdown(false);
       tryStartGoalMoment();
-    } else if (currentMode === "viewer") {
+    } else {
       tryStartBreakdown(true);
       tryStartVote();
     }
@@ -320,7 +379,7 @@ function scheduleBreakdownWake() {
 }
 
 function tryStartVote() {
-  if (busy || overlayEl || gamePickerOpen || modePickerOpen || !voteQueue.length) return;
+  if (busy || overlayEl || gamePickerOpen || !voteQueue.length) return;
   const poll = voteQueue.shift();
   const voteEnd = poll.opened + POLL.decisionSeconds * 1000;
   if (Date.now() >= voteEnd) {
@@ -332,7 +391,7 @@ function tryStartVote() {
 }
 
 function tryStartGoalMoment() {
-  if (busy || overlayEl || gamePickerOpen || modePickerOpen || !momentQueue.length) return;
+  if (busy || overlayEl || gamePickerOpen || !momentQueue.length) return;
   const moment = momentQueue.shift();
   busy = true;
   showGoalMoment(moment, () => {
@@ -345,7 +404,7 @@ function tryStartGoalMoment() {
 }
 
 function tryStartBreakdown(requireVote) {
-  if (busy || overlayEl || gamePickerOpen || modePickerOpen || !pendingBreakdowns.length) {
+  if (busy || overlayEl || gamePickerOpen || !pendingBreakdowns.length) {
     return;
   }
   const next = pendingBreakdowns[0];
@@ -362,69 +421,12 @@ function tryStartBreakdown(requireVote) {
   });
 }
 
-function showModePicker() {
-  if (overlayEl || modePickerOpen) return;
-  modePickerOpen = true;
-  busy = true;
-
-  const { el, content } = makeCard();
-  overlayEl = el;
-
-  div(content, "How are you following the match?", {
-    className: "vardict-heading"
-  });
-  div(content, "You can change this only by turning VARdict off.", {
-    className: "vardict-muted"
-  });
-
-  const modes = [
-    {
-      id: "viewer",
-      title: "Viewer",
-      hint: "Watching live — vote on cards and VAR."
-    },
-    {
-      id: "moments",
-      title: "Moments",
-      hint: "Not watching — goal alerts and community results on cards & VAR."
-    }
-  ];
-
-  modes.forEach((mode) => {
-    const btn = makeButton("vardict-btn--block");
-    const title = document.createElement("div");
-    title.className = "vardict-btn-title";
-    title.textContent = mode.title;
-    const hint = document.createElement("div");
-    hint.className = "vardict-btn-hint";
-    hint.textContent = mode.hint;
-    btn.appendChild(title);
-    btn.appendChild(hint);
-    btn.addEventListener("click", () => {
-      btn.disabled = true;
-      chrome.runtime.sendMessage({ type: "selectMode", mode: mode.id }, () => {
-        if (chrome.runtime.lastError) {
-          btn.disabled = false;
-          return;
-        }
-        modePickerOpen = false;
-        busy = false;
-        clearOverlay();
-        syncTick();
-      });
-    });
-    content.appendChild(btn);
-  });
-
-  mountOverlay(el);
-}
-
 function showGamePicker(games) {
   if (overlayEl || gamePickerOpen) return;
   gamePickerOpen = true;
   busy = true;
 
-  const { el, content } = makeCard();
+  const { el, content } = makeCard({ draggable: false });
   overlayEl = el;
 
   div(content, "Which match should VARdict follow?", {
@@ -456,7 +458,11 @@ function showGamePicker(games) {
     content.appendChild(btn);
   });
 
-  mountOverlay(el);
+  if (!mountOverlay(el)) {
+    gamePickerOpen = false;
+    busy = false;
+    overlayEl = null;
+  }
 }
 
 function showGoalMoment(moment, done) {
@@ -469,7 +475,12 @@ function showGoalMoment(moment, done) {
     lineHeight: "1.35"
   });
 
-  mountOverlay(el);
+  if (!mountOverlay(el)) {
+    overlayEl = null;
+    busy = false;
+    done();
+    return;
+  }
   setTimeout(() => {
     clearOverlay();
     done();
@@ -542,7 +553,12 @@ function showPoll(poll, voteEnd, options) {
     minHeight: "16px"
   });
 
-  mountOverlay(el);
+  if (!mountOverlay(el)) {
+    document.removeEventListener("keydown", onKey, true);
+    overlayEl = null;
+    busy = false;
+    return;
+  }
   const maxTimer = setTimeout(finalize, msLeft);
 
   countdownTimer = setInterval(() => {
@@ -615,7 +631,12 @@ function showBreakdown(question, done) {
     marginBottom: "14px"
   });
   const body = div(content, "Loading results…", { className: "vardict-muted", marginBottom: "0" });
-  mountOverlay(el);
+  if (!mountOverlay(el)) {
+    overlayEl = null;
+    busy = false;
+    done();
+    return;
+  }
 
   function finish() {
     if (cancelled) return;
@@ -641,15 +662,81 @@ function showBreakdown(question, done) {
   });
 }
 
+function applyOverlayPosition(el) {
+  if (overlayOffset) {
+    el.style.left = `${overlayOffset.left}px`;
+    el.style.top = `${overlayOffset.top}px`;
+    el.style.right = "auto";
+    el.style.transform = "none";
+    return;
+  }
+  el.style.left = "50%";
+  el.style.top = "18px";
+  el.style.transform = "translateX(-50%)";
+}
+
+function enableDrag(el) {
+  let dragging = false;
+  let startX = 0;
+  let startY = 0;
+  let originLeft = 0;
+  let originTop = 0;
+
+  function onPointerDown(e) {
+    if (e.button != null && e.button !== 0) return;
+    if (e.target && e.target.closest && e.target.closest("button, input, a")) return;
+    const rect = el.getBoundingClientRect();
+    dragging = true;
+    el.classList.add("vardict-dragging");
+    startX = e.clientX;
+    startY = e.clientY;
+    originLeft = rect.left;
+    originTop = rect.top;
+    el.style.left = `${originLeft}px`;
+    el.style.top = `${originTop}px`;
+    el.style.transform = "none";
+    el.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+
+  function onPointerMove(e) {
+    if (!dragging) return;
+    const maxLeft = Math.max(0, window.innerWidth - el.offsetWidth);
+    const maxTop = Math.max(0, window.innerHeight - el.offsetHeight);
+    const left = Math.min(maxLeft, Math.max(0, originLeft + (e.clientX - startX)));
+    const top = Math.min(maxTop, Math.max(0, originTop + (e.clientY - startY)));
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+  }
+
+  function onPointerUp(e) {
+    if (!dragging) return;
+    dragging = false;
+    el.classList.remove("vardict-dragging");
+    try {
+      el.releasePointerCapture(e.pointerId);
+    } catch (_err) {
+      /* ignore */
+    }
+    const left = parseFloat(el.style.left) || 0;
+    const top = parseFloat(el.style.top) || 0;
+    overlayOffset = { left, top };
+    chrome.storage.local.set({ overlayOffset });
+  }
+
+  el.addEventListener("pointerdown", onPointerDown);
+  el.addEventListener("pointermove", onPointerMove);
+  el.addEventListener("pointerup", onPointerUp);
+  el.addEventListener("pointercancel", onPointerUp);
+}
+
 function makeCard(options) {
   const compact = options && options.compact;
+  const draggable = !(options && options.draggable === false);
   const el = document.createElement("div");
   el.className = compact ? "vardict-glass vardict-glass--compact" : "vardict-glass";
   Object.assign(el.style, {
     position: "fixed",
-    top: "18px",
-    left: "50%",
-    transform: "translateX(-50%)",
     zIndex: "2147483647",
     width: "340px",
     borderRadius: "12px",
@@ -657,6 +744,7 @@ function makeCard(options) {
     fontFamily: "-apple-system, system-ui, sans-serif",
     color: "#ffffff"
   });
+  applyOverlayPosition(el);
   const content = document.createElement("div");
   content.className = "vardict-glass-inner";
   Object.assign(content.style, {
@@ -665,6 +753,8 @@ function makeCard(options) {
     boxSizing: "border-box"
   });
   el.appendChild(content);
+  if (draggable) enableDrag(el);
+  else el.style.cursor = "default";
   return { el, content };
 }
 
@@ -756,7 +846,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 function runPreview(kind) {
   if (typeof DEV_MODE === "undefined" || !DEV_MODE) return false;
-  if (overlayEl || busy || gamePickerOpen || modePickerOpen) return false;
+  if (!isOverlayHost() || overlayEl || busy || gamePickerOpen) return false;
 
   if (kind === "vote") {
     busy = true;
@@ -798,7 +888,11 @@ function showPreviewBreakdown(question, done) {
     marginBottom: "14px"
   });
   const body = div(content, "", {});
-  mountOverlay(el);
+  if (!mountOverlay(el)) {
+    overlayEl = null;
+    done();
+    return;
+  }
   showVoteCounts(body, 62, 38, 100);
   setTimeout(() => {
     renderBar(body, 62, 38, 100);

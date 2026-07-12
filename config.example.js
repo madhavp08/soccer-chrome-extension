@@ -15,17 +15,16 @@ const APIFOOTBALL_CONFIG = {
   finishedStatuses: ["FT", "AET", "PEN"]
 };
 
-const MODES = {
-  viewer: {
-    label: "Viewer",
-    triggerTypes: ["Card", "Var"]
-  },
-  moments: {
-    label: "Moments",
-    triggerTypes: ["Goal", "Card", "Var"],
-    momentTypes: ["Goal"],
-    pollTypes: ["Card", "Var"]
-  }
+// vote = Card/VAR polls; alert = goal toasts on away tabs
+const EVENT_TYPES = {
+  vote: ["Card", "Var"],
+  alert: ["Goal"]
+};
+
+// Deterministic padding so results look populated with few real users
+const FAKE_VOTES = {
+  min: 18,
+  max: 36
 };
 
 const POLL = {
