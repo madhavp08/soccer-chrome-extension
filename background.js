@@ -30,6 +30,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch(() => sendResponse({ ok: false }));
     return true;
   }
+  if (msg && msg.type === "penaltyVote") {
+    submitPenaltyVotes(msg)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  if (msg && msg.type === "penaltyBreakdown") {
+    getPenaltyBreakdown(msg)
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
 });
 
 async function sync(sender) {
@@ -58,18 +70,20 @@ async function sync(sender) {
     }
   }
 
-  const { finished } = await registerNewEvents(gameId, afEventsLen);
+  const { finished, penaltyShootout, inPenalties } = await registerNewEvents(gameId, afEventsLen);
   if (finished) {
     await turnOffAfterMatch();
     return { presence, activePolls: [], goalMoments: [], matchOver: true };
   }
 
   const activePolls = await fetchActivePolls(gameId);
-  const goalMoments = presence === "away" ? await listPendingGoalMoments() : [];
+  const goalMoments =
+    presence === "away" && !inPenalties ? await listPendingGoalMoments() : [];
   return {
     presence,
     activePolls,
-    goalMoments
+    goalMoments,
+    penaltyShootout
   };
 }
 
@@ -92,6 +106,7 @@ async function turnOffAfterMatch() {
     afEventsLen: null,
     viewerTabId: null,
     pendingGoalMoments: [],
+    penaltyDoneFixtureId: null,
     vardictMode: null
   });
 }
@@ -125,17 +140,23 @@ async function listPendingGoalMoments() {
 
 async function registerNewEvents(gameId, afEventsLen) {
   const data = await fetchFixture(gameId);
-  if (!data) return { finished: false };
+  if (!data) return { finished: false, penaltyShootout: null, inPenalties: false };
 
   const events = Array.isArray(data.events) ? data.events : [];
   const status = data.fixture && data.fixture.status ? data.fixture.status.short : "";
-  const finished = APIFOOTBALL_CONFIG.finishedStatuses.includes(status);
+  const finished = isMatchFullyOver(data);
   const voteTypes = EVENT_TYPES.vote || ["Card", "Var"];
   const alertTypes = EVENT_TYPES.alert || ["Goal"];
+  const inPenalties = status === "P";
   const goalMoments = [];
 
   if (finished) {
-    return { finished: true };
+    return { finished: true, penaltyShootout: null, inPenalties: false };
+  }
+
+  let penaltyShootout = null;
+  if (inPenalties) {
+    penaltyShootout = await ensurePenaltyShootout(gameId, data);
   }
 
   if (afEventsLen != null) {
@@ -146,7 +167,7 @@ async function registerNewEvents(gameId, afEventsLen) {
         const poll = buildPoll(event);
         pollOpens.push(openPoll(gameId, poll.question));
       }
-      if (alertTypes.includes(event.type)) {
+      if (!inPenalties && alertTypes.includes(event.type)) {
         goalMoments.push(buildGoalMoment(event));
       }
     }
@@ -159,7 +180,49 @@ async function registerNewEvents(gameId, afEventsLen) {
   }
 
   await chrome.storage.local.set({ afEventsLen: events.length });
-  return { finished: false };
+  return { finished: false, penaltyShootout, inPenalties };
+}
+
+function isMatchFullyOver(data) {
+  const short = data.fixture && data.fixture.status ? data.fixture.status.short : "";
+  const terminal = APIFOOTBALL_CONFIG.finishedStatuses || ["AET", "PEN"];
+  if (terminal.includes(short)) return true;
+  if (short !== "FT") return false;
+
+  const home = data.goals && data.goals.home;
+  const away = data.goals && data.goals.away;
+  if (home == null || away == null) return true;
+  if (home !== away) return true;
+
+  const round = data.league && data.league.round ? String(data.league.round) : "";
+  const mayGoExtra = /round of|quarter|semi|final|play-?off|knockout/i.test(round);
+  return !mayGoExtra;
+}
+
+async function ensurePenaltyShootout(gameId, data) {
+  const { penaltyDoneFixtureId } = await chrome.storage.local.get("penaltyDoneFixtureId");
+  if (penaltyDoneFixtureId != null && Number(penaltyDoneFixtureId) === Number(gameId)) {
+    return null;
+  }
+
+  const home = data.teams && data.teams.home && data.teams.home.name ? data.teams.home.name : "Home";
+  const away = data.teams && data.teams.away && data.teams.away.name ? data.teams.away.name : "Away";
+  const question = penaltyMasterQuestion(gameId);
+  const openedAt = await openPoll(gameId, question);
+  return {
+    fixtureId: gameId,
+    home,
+    away,
+    openedAt: openedAt || new Date().toISOString()
+  };
+}
+
+function penaltyMasterQuestion(fixtureId) {
+  return `Penalty shootout ${fixtureId}`;
+}
+
+function penaltyShotQuestion(fixtureId, teamName, shotIndex) {
+  return `Penalty ${fixtureId} · ${teamName} · shot ${shotIndex}`;
 }
 
 async function openPoll(fixtureId, question) {
@@ -174,9 +237,11 @@ async function openPoll(fixtureId, question) {
       headers,
       body: JSON.stringify({ p_fixture_id: fixtureId, p_question: question })
     });
-    return res.ok;
+    if (!res.ok) return null;
+    const openedAt = await res.json().catch(() => null);
+    return typeof openedAt === "string" ? openedAt : null;
   } catch (e) {
-    return false;
+    return null;
   }
 }
 
@@ -340,4 +405,49 @@ async function getBreakdown(question) {
     yes: realYes + fake.yes,
     no: realNo + fake.no
   };
+}
+
+function asShotFlags(shots) {
+  const out = [];
+  for (let i = 0; i < 5; i++) {
+    out.push(Boolean(shots && shots[i]));
+  }
+  return out;
+}
+
+async function submitPenaltyVotes(msg) {
+  const fixtureId = msg.fixtureId;
+  const home = msg.home;
+  const away = msg.away;
+  const homeShots = asShotFlags(msg.homeShots);
+  const awayShots = asShotFlags(msg.awayShots);
+  const tasks = [];
+  for (let i = 0; i < 5; i++) {
+    tasks.push(submitVote(homeShots[i] ? "Yes" : "No", penaltyShotQuestion(fixtureId, home, i + 1)));
+    tasks.push(submitVote(awayShots[i] ? "Yes" : "No", penaltyShotQuestion(fixtureId, away, i + 1)));
+  }
+  await Promise.all(tasks);
+  await chrome.storage.local.set({ penaltyDoneFixtureId: fixtureId });
+}
+
+function consensusGoal(breakdown) {
+  if (!breakdown || !breakdown.ok || !breakdown.total) return false;
+  return breakdown.yes / breakdown.total >= 0.5;
+}
+
+async function getPenaltyBreakdown(msg) {
+  const fixtureId = msg.fixtureId;
+  const home = msg.home;
+  const away = msg.away;
+  const homeShots = [];
+  const awayShots = [];
+  for (let i = 1; i <= 5; i++) {
+    const [h, a] = await Promise.all([
+      getBreakdown(penaltyShotQuestion(fixtureId, home, i)),
+      getBreakdown(penaltyShotQuestion(fixtureId, away, i))
+    ]);
+    homeShots.push(consensusGoal(h));
+    awayShots.push(consensusGoal(a));
+  }
+  return { ok: true, home: homeShots, away: awayShots };
 }

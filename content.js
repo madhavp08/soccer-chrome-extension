@@ -5,6 +5,8 @@ let presence = null;
 let syncInFlight = false;
 let breakdownWakeTimer = null;
 let overlayOffset = null;
+let pendingPenalty = null;
+let penaltyHandledKey = null;
 
 const voteQueue = [];
 const momentQueue = [];
@@ -185,6 +187,38 @@ function ensureOverlayStyles() {
     .vardict-btn--selected .vardict-btn-hint {
       color: #aaaaaa;
     }
+    .vardict-pen-row {
+      display: flex;
+      gap: 10px;
+      margin: 8px 0 14px;
+    }
+    .vardict-pen-dot {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.35);
+      background: #e5342b;
+      padding: 0;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+    }
+    .vardict-pen-dot:hover:not(:disabled) {
+      transform: scale(1.06);
+      border-color: rgba(255, 255, 255, 0.7);
+    }
+    .vardict-pen-dot.is-goal {
+      background: #00b86b;
+      border-color: rgba(255, 255, 255, 0.55);
+    }
+    .vardict-pen-dot:disabled {
+      cursor: default;
+      opacity: 0.95;
+    }
+    .vardict-pen-team {
+      font-size: 13px;
+      font-weight: 700;
+      margin-top: 4px;
+    }
   `;
   document.documentElement.appendChild(style);
 }
@@ -231,6 +265,8 @@ function resetSessionState() {
   gamePickerOpen = false;
   presence = null;
   syncInFlight = false;
+  pendingPenalty = null;
+  penaltyHandledKey = null;
   if (breakdownWakeTimer) {
     clearTimeout(breakdownWakeTimer);
     breakdownWakeTimer = null;
@@ -264,6 +300,9 @@ function syncTick() {
           return;
         }
         presence = res && res.presence === "watching" ? "watching" : "away";
+        if (res && res.penaltyShootout) {
+          queuePenalty(res.penaltyShootout);
+        }
         if (presence === "away") {
           handleAwaySync(res);
         } else {
@@ -278,17 +317,46 @@ function syncTick() {
 
 function handleWatchingSync(res) {
   ingestViewerPolls(res && res.activePolls ? res.activePolls : []);
+  tryStartPenalty();
   tryStartVote();
   tryStartBreakdown(true);
   scheduleBreakdownWake();
 }
 
 function handleAwaySync(res) {
-  ingestGoalMoments(res && res.goalMoments ? res.goalMoments : []);
+  if (!(res && res.penaltyShootout)) {
+    ingestGoalMoments(res && res.goalMoments ? res.goalMoments : []);
+  }
   ingestAwayBreakdownPolls(res && res.activePolls ? res.activePolls : []);
+  tryStartPenalty();
   tryStartGoalMoment();
   tryStartBreakdown(false);
   scheduleBreakdownWake();
+}
+
+function queuePenalty(shootout) {
+  if (!shootout || shootout.fixtureId == null) return;
+  const key = `penalty:${shootout.fixtureId}`;
+  if (penaltyHandledKey === key) return;
+  if (pendingPenalty && pendingPenalty.fixtureId === shootout.fixtureId) return;
+  pendingPenalty = shootout;
+}
+
+function tryStartPenalty() {
+  if (busy || overlayEl || gamePickerOpen || !pendingPenalty) return;
+  const shootout = pendingPenalty;
+  pendingPenalty = null;
+  const key = `penalty:${shootout.fixtureId}`;
+  if (penaltyHandledKey === key) return;
+  busy = true;
+  showPenaltyPredict(shootout, () => {
+    penaltyHandledKey = key;
+    busy = false;
+    tryStartPenalty();
+    tryStartVote();
+    tryStartGoalMoment();
+    tryStartBreakdown(presence !== "away");
+  });
 }
 
 function ingestViewerPolls(polls) {
@@ -368,6 +436,7 @@ function scheduleBreakdownWake() {
   const delay = Math.max(0, pendingBreakdowns[0].showAt - Date.now());
   breakdownWakeTimer = setTimeout(() => {
     breakdownWakeTimer = null;
+    tryStartPenalty();
     if (presence === "away") {
       tryStartBreakdown(false);
       tryStartGoalMoment();
@@ -379,7 +448,7 @@ function scheduleBreakdownWake() {
 }
 
 function tryStartVote() {
-  if (busy || overlayEl || gamePickerOpen || !voteQueue.length) return;
+  if (busy || overlayEl || gamePickerOpen || pendingPenalty || !voteQueue.length) return;
   const poll = voteQueue.shift();
   const voteEnd = poll.opened + POLL.decisionSeconds * 1000;
   if (Date.now() >= voteEnd) {
@@ -391,7 +460,7 @@ function tryStartVote() {
 }
 
 function tryStartGoalMoment() {
-  if (busy || overlayEl || gamePickerOpen || !momentQueue.length) return;
+  if (busy || overlayEl || gamePickerOpen || pendingPenalty || !momentQueue.length) return;
   const moment = momentQueue.shift();
   busy = true;
   showGoalMoment(moment, () => {
@@ -404,7 +473,7 @@ function tryStartGoalMoment() {
 }
 
 function tryStartBreakdown(requireVote) {
-  if (busy || overlayEl || gamePickerOpen || !pendingBreakdowns.length) {
+  if (busy || overlayEl || gamePickerOpen || pendingPenalty || !pendingBreakdowns.length) {
     return;
   }
   const next = pendingBreakdowns[0];
@@ -462,6 +531,144 @@ function showGamePicker(games) {
     gamePickerOpen = false;
     busy = false;
     overlayEl = null;
+  }
+}
+
+function makePenDots(parent, shots, interactive) {
+  const row = document.createElement("div");
+  row.className = "vardict-pen-row";
+  const dots = [];
+  for (let i = 0; i < 5; i++) {
+    const dot = document.createElement("button");
+    dot.type = "button";
+    dot.className = "vardict-pen-dot";
+    if (shots[i]) dot.classList.add("is-goal");
+    if (!interactive) {
+      dot.disabled = true;
+    } else {
+      dot.addEventListener("click", (e) => {
+        e.stopPropagation();
+        shots[i] = !shots[i];
+        dot.classList.toggle("is-goal", shots[i]);
+      });
+    }
+    row.appendChild(dot);
+    dots.push(dot);
+  }
+  parent.appendChild(row);
+  return dots;
+}
+
+function showPenaltyPredict(shootout, done) {
+  const decisionMs = (POLL.penaltyDecisionSeconds || 45) * 1000;
+  const resultsMs = (POLL.penaltyResultsSeconds || 8) * 1000;
+  const opened = Date.parse(shootout.openedAt);
+  const voteEnd = Number.isNaN(opened) ? Date.now() + decisionMs : opened + decisionMs;
+  const homeShots = [false, false, false, false, false];
+  const awayShots = [false, false, false, false, false];
+  let finalized = false;
+
+  const { el, content } = makeCard();
+  el.style.width = "380px";
+  overlayEl = el;
+
+  div(content, "Penalty shootout", { className: "vardict-heading" });
+  div(content, "Tap the shots you think will score. Green = goal, red = miss.", {
+    className: "vardict-muted"
+  });
+
+  div(content, shootout.home, { className: "vardict-pen-team" });
+  makePenDots(content, homeShots, true);
+
+  div(content, shootout.away, { className: "vardict-pen-team" });
+  makePenDots(content, awayShots, true);
+
+  const note = div(content, "", { className: "vardict-muted", marginBottom: "10px" });
+  const submit = makeButton("vardict-btn--block");
+  submit.textContent = "Lock in picks";
+  submit.style.textAlign = "center";
+  content.appendChild(submit);
+
+  function updateNote() {
+    const secs = Math.max(0, Math.ceil((voteEnd - Date.now()) / 1000));
+    note.textContent = secs > 0 ? `${secs}s left to decide.` : "Time is up.";
+  }
+  updateNote();
+  const countdown = setInterval(updateNote, 1000);
+
+  function showCommunity(home, away) {
+    content.textContent = "";
+    div(content, "Community picks", { className: "vardict-heading" });
+    div(content, "Each shot is a goal if at least half the community picked it.", {
+      className: "vardict-muted"
+    });
+    div(content, shootout.home, { className: "vardict-pen-team" });
+    makePenDots(content, home, false);
+    div(content, shootout.away, { className: "vardict-pen-team" });
+    makePenDots(content, away, false);
+    setTimeout(() => {
+      clearOverlay();
+      done();
+    }, resultsMs);
+  }
+
+  function fetchAndShowCommunity() {
+    chrome.runtime.sendMessage(
+      {
+        type: "penaltyBreakdown",
+        fixtureId: shootout.fixtureId,
+        home: shootout.home,
+        away: shootout.away
+      },
+      (res) => {
+        const home =
+          res && res.ok && Array.isArray(res.home) ? res.home : [false, false, false, false, false];
+        const away =
+          res && res.ok && Array.isArray(res.away) ? res.away : [false, false, false, false, false];
+        showCommunity(home, away);
+      }
+    );
+  }
+
+  function finalize(save) {
+    if (finalized) return;
+    finalized = true;
+    clearInterval(countdown);
+    clearTimeout(maxTimer);
+    submit.disabled = true;
+    content.querySelectorAll(".vardict-pen-dot").forEach((d) => {
+      d.disabled = true;
+    });
+
+    if (!save) {
+      chrome.storage.local.set({ penaltyDoneFixtureId: shootout.fixtureId }, fetchAndShowCommunity);
+      return;
+    }
+
+    note.textContent = "Saving…";
+    chrome.runtime.sendMessage(
+      {
+        type: "penaltyVote",
+        fixtureId: shootout.fixtureId,
+        home: shootout.home,
+        away: shootout.away,
+        homeShots,
+        awayShots
+      },
+      () => {
+        fetchAndShowCommunity();
+      }
+    );
+  }
+
+  submit.addEventListener("click", () => finalize(true));
+  const maxTimer = setTimeout(() => finalize(false), Math.max(1000, voteEnd - Date.now()));
+
+  if (!mountOverlay(el)) {
+    clearInterval(countdown);
+    clearTimeout(maxTimer);
+    overlayEl = null;
+    done();
   }
 }
 

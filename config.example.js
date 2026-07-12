@@ -12,7 +12,8 @@ const SUPABASE_CONFIG = {
 
 const APIFOOTBALL_CONFIG = {
   functionUrl: "https://YOUR-PROJECT.supabase.co/functions/v1/refwatch-events",
-  finishedStatuses: ["FT", "AET", "PEN"]
+  // Fully over only. FT with a knockout draw is ignored so ET/pens can continue.
+  finishedStatuses: ["AET", "PEN"]
 };
 
 // vote = Card/VAR polls; alert = goal toasts on away tabs
@@ -35,5 +36,7 @@ const POLL = {
   resultsDelaySeconds: 21,
   resultsThreshold: 1,
   momentShowSeconds: 5,
-  countShowSeconds: 3
+  countShowSeconds: 3,
+  penaltyDecisionSeconds: 45,
+  penaltyResultsSeconds: 8
 };

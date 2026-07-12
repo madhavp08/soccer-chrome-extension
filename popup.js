@@ -29,6 +29,7 @@ function turnOff() {
     afEventsLen: null,
     viewerTabId: null,
     pendingGoalMoments: [],
+    penaltyDoneFixtureId: null,
     vardictMode: null
   });
 }
