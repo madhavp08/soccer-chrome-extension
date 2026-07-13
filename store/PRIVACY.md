@@ -1,20 +1,24 @@
 # VARdict — Privacy Policy
 
-_Last updated: June 27, 2026_
+_Last updated: July 12, 2026_
 
-VARdict ("the extension") helps fans follow live World Cup matches with anonymous
+VARdict ("the extension") helps fans follow live football/soccer matches with anonymous
 polls on controversial referee decisions and community result summaries.
 
 ## What we collect
 
-**Viewer mode** — when you answer a poll, we store:
+When you answer a poll on your watching tab, we store:
 
-- your choice ("Yes" or "No"), and
+- your choice ("Valid" or "Invalid"), and
 - the question text describing the referee decision (for example, card type, team,
   and match minute).
 
-**Moments mode** — you do not submit votes. You may see aggregate results (totals and
-percentages) that were collected from other users in Viewer mode.
+Penalty-shootout predictions store per-shot "Goal" or "Miss" choices with a question
+that identifies the fixture, team, and shot number. That data is used only to show
+anonymous community consensus for the shootout UI.
+
+On other tabs while VARdict is on, you do not submit card/VAR votes. You may see
+aggregate results (totals and percentages) collected from fans who voted.
 
 All responses are anonymous. The extension does not request or collect your name,
 email, account, location, or any personally identifiable information, and it does not
@@ -31,14 +35,14 @@ build a profile of you.
 ## How the data is used
 
 Responses are used in aggregate to show community opinion on referee decisions (vote
-counts and percentage splits). We do not sell your data and we do not use it for any
-unrelated purpose.
+counts and percentage splits) and penalty-shootout consensus. We do not sell your data
+and we do not use it for any unrelated purpose.
 
 ## Where the data goes
 
 Poll responses and shared poll timing are sent to our backend on Supabase. Live match
-events are fetched through our server from a third-party football data provider. No
-information identifying you is included in those requests.
+events are fetched through our server from a third-party football/soccer data provider.
+No information identifying you is included in those requests.
 
 ## Data retention
 

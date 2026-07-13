@@ -16,7 +16,7 @@ const APIFOOTBALL_CONFIG = {
   finishedStatuses: ["AET", "PEN"]
 };
 
-// vote = Card/VAR polls; alert = goal toasts on away tabs
+// vote = Card/VAR Valid/Invalid polls; alert = goal toasts on away tabs
 const EVENT_TYPES = {
   vote: ["Card", "Var"],
   alert: ["Goal"]

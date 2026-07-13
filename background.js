@@ -337,9 +337,11 @@ async function listLiveGames() {
       const gh = item.goals && item.goals.home != null ? item.goals.home : null;
       const ga = item.goals && item.goals.away != null ? item.goals.away : null;
       const score = gh != null && ga != null ? ` (${gh}-${ga})` : "";
+      const competition = item.league && item.league.name ? String(item.league.name) : "";
+      const matchup = `${home} vs ${away}${score}`;
       return {
         id: item.fixture.id,
-        label: `${home} vs ${away}${score}`
+        label: competition ? `${competition} · ${matchup}` : matchup
       };
     });
 
@@ -498,8 +500,8 @@ async function submitPenaltyVotes(msg) {
   const awayShots = asShotFlags(msg.awayShots);
   const tasks = [];
   for (let i = 0; i < 5; i++) {
-    tasks.push(submitVote(homeShots[i] ? "Yes" : "No", penaltyShotQuestion(fixtureId, home, i + 1)));
-    tasks.push(submitVote(awayShots[i] ? "Yes" : "No", penaltyShotQuestion(fixtureId, away, i + 1)));
+    tasks.push(submitVote(homeShots[i] ? "Goal" : "Miss", penaltyShotQuestion(fixtureId, home, i + 1)));
+    tasks.push(submitVote(awayShots[i] ? "Goal" : "Miss", penaltyShotQuestion(fixtureId, away, i + 1)));
   }
   await Promise.all(tasks);
   await chrome.storage.local.set({ penaltyDoneFixtureId: fixtureId });

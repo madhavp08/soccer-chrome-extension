@@ -1,7 +1,9 @@
 const AF_BASE = "https://v3.football.api-sports.io";
-const LEAGUE = 1;
-const SEASON = 2026;
 const UPSTREAM_TIMEOUT_MS = 12000;
+
+// World Cup, Premier League, La Liga, Bundesliga, Serie A, Ligue 1,
+// Champions League, European Championship, Copa America
+const LIVE_LEAGUES = "1-39-140-78-135-61-2-4-9";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -30,7 +32,7 @@ Deno.serve(async (req) => {
 
     let target;
     if (action === "live") {
-      target = `${AF_BASE}/fixtures?league=${LEAGUE}&season=${SEASON}&live=all`;
+      target = `${AF_BASE}/fixtures?live=${LIVE_LEAGUES}`;
     } else if (action === "fixture") {
       const id = url.searchParams.get("id");
       if (!id || !/^\d+$/.test(id)) {
