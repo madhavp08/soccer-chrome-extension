@@ -31,7 +31,9 @@ const PENALTY_DIRECTIONS = ["Top Left", "Bottom Left", "Middle", "Bottom Right",
 
 const PREVIEW = {
   question: "Yellow Card for Example Player Example Team.",
-  goal: "Goal for Example Player Example Team, 67'."
+  varQuestion: "VAR · Goal cancelled for Example Player Example Team.",
+  goal: "Goal for Example Player Example Team, 67'.",
+  penaltyKick: "Penalty kick · 0 · 67' · Example Player Example Team"
 };
 
 function trackTimeout(fn, ms) {
@@ -635,7 +637,8 @@ function tryStartBreakdown(requireVote) {
   });
 }
 
-function showGamePicker(games) {
+function showGamePicker(games, options) {
+  const preview = Boolean(options && options.preview);
   if (overlayEl || gamePickerOpen) return;
   gamePickerOpen = true;
   busy = true;
@@ -651,6 +654,12 @@ function showGamePicker(games) {
     const btn = makeButton("vardict-btn--block");
     btn.textContent = game.label;
     btn.addEventListener("click", () => {
+      if (preview) {
+        gamePickerOpen = false;
+        busy = false;
+        clearOverlay();
+        return;
+      }
       btn.disabled = true;
       chrome.runtime.sendMessage(
         { type: "selectGame", gameId: game.id, label: game.label },
@@ -711,7 +720,8 @@ function penaltyKickLabel(question) {
   return "Penalty kick";
 }
 
-function showPenaltyDirection(kick, voteEnd, done) {
+function showPenaltyDirection(kick, voteEnd, done, options) {
+  const preview = Boolean(options && options.preview);
   let selected = null;
   let finalized = false;
   const { el, content } = makeCard();
@@ -741,7 +751,7 @@ function showPenaltyDirection(kick, voteEnd, done) {
       if (finalized) return;
       selected = label;
       buttons.forEach((b) => b.classList.toggle("vardict-btn--selected", b === btn));
-      note.textContent = "Sending…";
+      note.textContent = preview ? "Preview results…" : "Sending…";
       finalize(true);
     });
     grid.appendChild(btn);
@@ -783,7 +793,28 @@ function showPenaltyDirection(kick, voteEnd, done) {
     }, resultsMs);
   }
 
+  function previewDirectionChoices() {
+    const counts = [28, 14, 22, 18, 18];
+    const total = counts.reduce((a, b) => a + b, 0);
+    const raw = counts.map((c) => (c * 100) / total);
+    const floors = raw.map((r) => Math.floor(r));
+    let rem = 100 - floors.reduce((a, b) => a + b, 0);
+    const order = raw
+      .map((r, i) => ({ i, frac: r - floors[i] }))
+      .sort((a, b) => b.frac - a.frac);
+    for (let k = 0; k < rem; k++) floors[order[k % order.length].i] += 1;
+    return PENALTY_DIRECTIONS.map((choice, i) => ({
+      choice,
+      count: counts[i],
+      percent: floors[i]
+    }));
+  }
+
   function fetchResults() {
+    if (preview) {
+      showDirectionResults(previewDirectionChoices());
+      return;
+    }
     chrome.runtime.sendMessage({ type: "penaltyDirectionBreakdown", question: kick.question }, (res) => {
       if (chrome.runtime.lastError || !res || !res.ok || !Array.isArray(res.choices)) {
         clearOverlay();
@@ -807,6 +838,11 @@ function showPenaltyDirection(kick, voteEnd, done) {
     if (!save) {
       clearOverlay();
       done();
+      return;
+    }
+
+    if (preview) {
+      fetchResults();
       return;
     }
 
@@ -844,7 +880,8 @@ function showPenaltyDirection(kick, voteEnd, done) {
   };
 }
 
-function showPenaltyPredict(shootout, done) {
+function showPenaltyPredict(shootout, done, options) {
+  const preview = Boolean(options && options.preview);
   const decisionMs = (POLL.penaltyDecisionSeconds || 45) * 1000;
   const resultsMs = (POLL.penaltyResultsSeconds || 8) * 1000;
   const opened = Date.parse(shootout.openedAt);
@@ -894,6 +931,10 @@ function showPenaltyPredict(shootout, done) {
   }
 
   function fetchAndShowCommunity() {
+    if (preview) {
+      showCommunity([true, true, false, true, false], [true, false, true, true, false]);
+      return;
+    }
     chrome.runtime.sendMessage(
       {
         type: "penaltyBreakdown",
@@ -927,6 +968,11 @@ function showPenaltyPredict(shootout, done) {
     content.querySelectorAll(".vardict-pen-dot").forEach((d) => {
       d.disabled = true;
     });
+
+    if (preview) {
+      fetchAndShowCommunity();
+      return;
+    }
 
     if (!save) {
       chrome.storage.local.set({ penaltyDoneFixtureId: shootout.fixtureId }, fetchAndShowCommunity);
@@ -1419,10 +1465,11 @@ function runPreview(kind) {
   busy = false;
   gamePickerOpen = false;
 
-  if (kind === "vote") {
+  if (kind === "vote" || kind === "var") {
     busy = true;
+    const question = kind === "var" ? PREVIEW.varQuestion : PREVIEW.question;
     showPoll(
-      { question: PREVIEW.question, opened: Date.now() },
+      { question, opened: Date.now() },
       Date.now() + POLL.decisionSeconds * 1000,
       { preview: true }
     );
@@ -1439,9 +1486,51 @@ function runPreview(kind) {
 
   if (kind === "results") {
     busy = true;
-    showPreviewBreakdown(PREVIEW.question, () => {
+    showPreviewBreakdown(PREVIEW.varQuestion, () => {
       busy = false;
     });
+    return true;
+  }
+
+  if (kind === "kick") {
+    busy = true;
+    showPenaltyDirection(
+      { question: PREVIEW.penaltyKick, opened: Date.now() },
+      Date.now() + (POLL.penaltyDecisionSeconds || 45) * 1000,
+      () => {
+        busy = false;
+      },
+      { preview: true }
+    );
+    return true;
+  }
+
+  if (kind === "pens") {
+    busy = true;
+    showPenaltyPredict(
+      {
+        fixtureId: 0,
+        home: "Home FC",
+        away: "Away United",
+        openedAt: new Date().toISOString()
+      },
+      () => {
+        busy = false;
+      },
+      { preview: true }
+    );
+    return true;
+  }
+
+  if (kind === "picker") {
+    showGamePicker(
+      [
+        { id: 1, label: "Premier League · Home FC vs Away United (1-0)" },
+        { id: 2, label: "La Liga · Rojo vs Azul (0-0)" },
+        { id: 3, label: "Champions League · Night vs Day (2-2)" }
+      ],
+      { preview: true }
+    );
     return true;
   }
 

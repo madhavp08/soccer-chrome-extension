@@ -189,13 +189,26 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 if (devMode && devRoot) {
+  const label = document.createElement("div");
+  label.className = "preview-label";
+  label.textContent = "Preview overlays";
+  devRoot.appendChild(label);
+
   const row = document.createElement("div");
   row.className = "preview-row";
-  [["vote", "Vote"], ["goal", "Goal"], ["results", "Results"]].forEach(([kind, label]) => {
+  [
+    ["vote", "Card"],
+    ["var", "VAR"],
+    ["goal", "Goal"],
+    ["results", "Results"],
+    ["kick", "Pen kick"],
+    ["pens", "Shootout"],
+    ["picker", "Games"]
+  ].forEach(([kind, text]) => {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "preview-btn";
-    btn.textContent = label;
+    btn.textContent = text;
     btn.addEventListener("click", () => sendPreview(kind));
     row.appendChild(btn);
   });

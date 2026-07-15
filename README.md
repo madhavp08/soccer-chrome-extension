@@ -424,11 +424,15 @@ const FAKE_VOTES = { min: 18, max: 36 };
 
 ### DEV_MODE overlays
 
-Set `DEV_MODE = true` in `config.js`, reload the extension, open a normal tab, open the popup, and use:
+Set `DEV_MODE = true` in `config.js`, reload the extension, open a normal tab, open the popup, and use **Preview overlays**:
 
-- **Vote** — sample card poll (not saved).
+- **Card** — sample yellow-card Valid/Invalid poll (not saved).
+- **VAR** — sample VAR wording poll (not saved).
 - **Goal** — sample goal toast.
-- **Results** — sample counts + bar.
+- **Results** — sample counts + percentage bar.
+- **Pen kick** — in-game penalty direction picker + fake 5-way community split (not saved).
+- **Shootout** — 5+5 circle shootout UI + fake community dots (not saved).
+- **Games** — sample multi-match picker.
 
 If preview fails, refresh the page so the content script is present, and avoid `chrome://` URLs.
 
