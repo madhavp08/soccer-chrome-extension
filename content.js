@@ -14,6 +14,7 @@ const activeTimeouts = new Set();
 const activeIntervals = new Set();
 
 const voteQueue = [];
+const kickQueue = [];
 const momentQueue = [];
 const pendingBreakdowns = [];
 const handled = new Set();
@@ -26,6 +27,7 @@ const VALID_KEYS = new Set(["a", "j"]);
 const INVALID_KEYS = new Set(["d", "l"]);
 const RESULTS_SHOW_MS = 6000;
 const VOTE_SAVE_TIMEOUT_MS = 8000;
+const PENALTY_DIRECTIONS = ["Top Left", "Bottom Left", "Middle", "Bottom Right", "Top Right"];
 
 const PREVIEW = {
   question: "Yellow Card for Example Player Example Team.",
@@ -268,6 +270,34 @@ function ensureOverlayStyles() {
       font-weight: 700;
       margin-top: 4px;
     }
+    .vardict-dir-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .vardict-btn--dir {
+      min-height: 42px;
+      padding: 10px 8px;
+      font-size: 13px;
+      text-align: center;
+      box-sizing: border-box;
+    }
+    .vardict-dir-grid .vardict-btn--dir:nth-child(3) {
+      grid-column: 1 / -1;
+    }
+    .vardict-dir-results {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .vardict-dir-result-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 14px;
+      font-weight: 600;
+    }
   `;
   document.documentElement.appendChild(style);
 }
@@ -323,6 +353,7 @@ chrome.storage.local.get("enabled", ({ enabled }) => {
 
 function clearSessionQueues(keepPresence) {
   voteQueue.length = 0;
+  kickQueue.length = 0;
   momentQueue.length = 0;
   pendingBreakdowns.length = 0;
   handled.clear();
@@ -381,8 +412,10 @@ function syncTick() {
 }
 
 function handleWatchingSync(res) {
+  ingestPenaltyKicks(res && res.penaltyKicks ? res.penaltyKicks : []);
   ingestViewerPolls(res && res.activePolls ? res.activePolls : []);
   tryStartPenalty();
+  tryStartPenaltyKick();
   tryStartVote();
   tryStartBreakdown(true);
   scheduleBreakdownWake();
@@ -392,8 +425,10 @@ function handleAwaySync(res) {
   if (!(res && res.penaltyShootout)) {
     ingestGoalMoments(res && res.goalMoments ? res.goalMoments : []);
   }
+  ingestPenaltyKicks(res && res.penaltyKicks ? res.penaltyKicks : []);
   ingestAwayBreakdownPolls(res && res.activePolls ? res.activePolls : []);
   tryStartPenalty();
+  tryStartPenaltyKick();
   tryStartGoalMoment();
   tryStartBreakdown(false);
   scheduleBreakdownWake();
@@ -418,10 +453,48 @@ function tryStartPenalty() {
     penaltyHandledKey = key;
     busy = false;
     tryStartPenalty();
+    tryStartPenaltyKick();
     tryStartVote();
     tryStartGoalMoment();
     tryStartBreakdown(presence !== "away");
   });
+}
+
+function ingestPenaltyKicks(polls) {
+  const now = Date.now();
+  for (const poll of polls) {
+    if (!poll || !poll.question || handled.has(poll.question)) continue;
+    const opened = Date.parse(poll.openedAt);
+    if (Number.isNaN(opened)) continue;
+    const decisionMs = (POLL.penaltyDecisionSeconds || 45) * 1000;
+    const voteEnd = opened + decisionMs;
+    const resultsMs = POLL.countShowSeconds * 1000 + RESULTS_SHOW_MS;
+    if (now > voteEnd + resultsMs) {
+      handled.add(poll.question);
+      continue;
+    }
+    handled.add(poll.question);
+    kickQueue.push({ question: poll.question, opened });
+  }
+}
+
+function tryStartPenaltyKick() {
+  while (!busy && !overlayEl && !gamePickerOpen && !pendingPenalty && kickQueue.length) {
+    const kick = kickQueue.shift();
+    const decisionMs = (POLL.penaltyDecisionSeconds || 45) * 1000;
+    const voteEnd = kick.opened + decisionMs;
+    if (Date.now() >= voteEnd) continue;
+    busy = true;
+    showPenaltyDirection(kick, voteEnd, () => {
+      busy = false;
+      tryStartPenalty();
+      tryStartPenaltyKick();
+      tryStartVote();
+      tryStartGoalMoment();
+      tryStartBreakdown(presence !== "away");
+    });
+    return;
+  }
 }
 
 function ingestViewerPolls(polls) {
@@ -502,6 +575,7 @@ function scheduleBreakdownWake() {
   breakdownWakeTimer = setTimeout(() => {
     breakdownWakeTimer = null;
     tryStartPenalty();
+    tryStartPenaltyKick();
     if (presence === "away") {
       tryStartBreakdown(false);
       tryStartGoalMoment();
@@ -513,7 +587,7 @@ function scheduleBreakdownWake() {
 }
 
 function tryStartVote() {
-  while (!busy && !overlayEl && !gamePickerOpen && !pendingPenalty && voteQueue.length) {
+  while (!busy && !overlayEl && !gamePickerOpen && !pendingPenalty && !kickQueue.length && voteQueue.length) {
     const poll = voteQueue.shift();
     const voteEnd = poll.opened + POLL.decisionSeconds * 1000;
     if (Date.now() >= voteEnd) {
@@ -527,20 +601,23 @@ function tryStartVote() {
 }
 
 function tryStartGoalMoment() {
-  if (busy || overlayEl || gamePickerOpen || pendingPenalty || !momentQueue.length) return;
+  if (busy || overlayEl || gamePickerOpen || pendingPenalty || kickQueue.length || !momentQueue.length) {
+    return;
+  }
   const moment = momentQueue.shift();
   busy = true;
   showGoalMoment(moment, () => {
     shownMoments.add(moment.key);
     busy = false;
     tryStartGoalMoment();
+    tryStartPenaltyKick();
     tryStartBreakdown(false);
     tryStartVote();
   });
 }
 
 function tryStartBreakdown(requireVote) {
-  if (busy || overlayEl || gamePickerOpen || pendingPenalty || !pendingBreakdowns.length) {
+  if (busy || overlayEl || gamePickerOpen || pendingPenalty || kickQueue.length || !pendingBreakdowns.length) {
     return;
   }
   const next = pendingBreakdowns[0];
@@ -551,6 +628,7 @@ function tryStartBreakdown(requireVote) {
     handled.add(next.question);
     busy = false;
     scheduleBreakdownWake();
+    tryStartPenaltyKick();
     tryStartBreakdown(requireVote);
     tryStartGoalMoment();
     tryStartVote();
@@ -621,6 +699,149 @@ function makePenDots(parent, shots, interactive) {
   }
   parent.appendChild(row);
   return dots;
+}
+
+function penaltyKickLabel(question) {
+  const parts = String(question || "").split(" · ");
+  if (parts.length >= 4) {
+    const stamp = parts[2];
+    const who = parts.slice(3).join(" · ");
+    return `Penalty · ${who}${stamp ? ` · ${stamp}` : ""}`;
+  }
+  return "Penalty kick";
+}
+
+function showPenaltyDirection(kick, voteEnd, done) {
+  let selected = null;
+  let finalized = false;
+  const { el, content } = makeCard();
+  overlayEl = el;
+  const msLeft = Math.max(1000, voteEnd - Date.now());
+  const resultsMs = (POLL.penaltyResultsSeconds || 8) * 1000;
+
+  div(content, penaltyKickLabel(kick.question), {
+    fontSize: "18px",
+    fontWeight: "700",
+    lineHeight: "1.3",
+    marginBottom: "8px"
+  });
+  div(content, "Where will they put it?", {
+    className: "vardict-muted",
+    marginBottom: "14px"
+  });
+
+  const grid = document.createElement("div");
+  grid.className = "vardict-dir-grid";
+  const buttons = [];
+  PENALTY_DIRECTIONS.forEach((label) => {
+    const btn = makeButton("vardict-btn--dir");
+    btn.textContent = label;
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (finalized) return;
+      selected = label;
+      buttons.forEach((b) => b.classList.toggle("vardict-btn--selected", b === btn));
+      note.textContent = "Sending…";
+      finalize(true);
+    });
+    grid.appendChild(btn);
+    buttons.push(btn);
+  });
+  content.appendChild(grid);
+
+  const note = div(content, `${Math.ceil(msLeft / 1000)}s`, {
+    className: "vardict-muted",
+    marginTop: "14px"
+  });
+
+  const countdown = trackInterval(() => {
+    if (finalized) return;
+    const secs = Math.ceil((voteEnd - Date.now()) / 1000);
+    if (secs > 0 && !selected) note.textContent = `${secs}s`;
+  }, 1000);
+
+  function showDirectionResults(choices) {
+    content.textContent = "";
+    div(content, "Community picks", { className: "vardict-heading" });
+    const list = document.createElement("div");
+    list.className = "vardict-dir-results";
+    (choices || []).forEach((row) => {
+      const line = document.createElement("div");
+      line.className = "vardict-dir-result-row";
+      const name = document.createElement("span");
+      name.textContent = row.choice;
+      const pct = document.createElement("span");
+      pct.textContent = `${row.percent}%`;
+      line.appendChild(name);
+      line.appendChild(pct);
+      list.appendChild(line);
+    });
+    content.appendChild(list);
+    trackTimeout(() => {
+      clearOverlay();
+      done();
+    }, resultsMs);
+  }
+
+  function fetchResults() {
+    chrome.runtime.sendMessage({ type: "penaltyDirectionBreakdown", question: kick.question }, (res) => {
+      if (chrome.runtime.lastError || !res || !res.ok || !Array.isArray(res.choices)) {
+        clearOverlay();
+        done();
+        return;
+      }
+      showDirectionResults(res.choices);
+    });
+  }
+
+  function finalize(save) {
+    if (finalized) return;
+    if (save && !selected) return;
+    finalized = true;
+    clearTracked(countdown);
+    clearTracked(maxTimer);
+    buttons.forEach((b) => {
+      b.disabled = true;
+    });
+
+    if (!save) {
+      clearOverlay();
+      done();
+      return;
+    }
+
+    voted.add(kick.question);
+    let settled = false;
+    const failSafe = trackTimeout(() => {
+      if (settled) return;
+      settled = true;
+      fetchResults();
+    }, VOTE_SAVE_TIMEOUT_MS);
+
+    chrome.runtime.sendMessage(
+      { type: "penaltyDirectionVote", question: kick.question, choice: selected },
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTracked(failSafe);
+        fetchResults();
+      }
+    );
+  }
+
+  const maxTimer = trackTimeout(() => finalize(false), msLeft);
+
+  if (!mountOverlay(el)) {
+    clearTracked(countdown);
+    clearTracked(maxTimer);
+    overlayEl = null;
+    done();
+  }
+
+  overlayCleanup = () => {
+    clearTracked(countdown);
+    clearTracked(maxTimer);
+  };
 }
 
 function showPenaltyPredict(shootout, done) {

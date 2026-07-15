@@ -72,6 +72,18 @@ When the feed reports a `Card` or `Var` event, the first client to notice regist
 - Keyboard while the poll is open: **A** or **J** = Valid, **D** or **L** = Invalid.
 - If you never pick, the vote is skipped; watching users who skipped do not get a forced results bar for that question.
 
+VAR questions are worded as `VAR · {detail} for {player}…` (duplicate “VAR” prefixes from the feed are stripped).
+
+### In-game penalty kicks
+
+When the feed reports a penalty awarded during open play (typically Var **Penalty confirmed** / **Penalty awarded**), both watching and away tabs get a direction picker instead of Valid/Invalid:
+
+- Choices: **Top Left**, **Bottom Left**, **Middle**, **Bottom Right**, **Top Right**
+- The overlay waits until you pick (or the decision window ends)
+- Then community percentages for all five spots are shown; padded fake votes are distributed so the five percentages always add up to **100%**
+
+Penalty *shootouts* (fixture status `P`) still use the separate 5+5 circle prediction UI.
+
 ### Community results
 
 At `opened_at + 21 seconds` (configurable), eligible clients show results:
@@ -299,7 +311,9 @@ grant execute on function active_polls_for_fixture(bigint) to anon;
 
 If you already deployed an older `vote_breakdown` that only counted legacy choice strings, replace the function with the version above so Valid/Invalid and Goal/Miss aggregate correctly.
 
-Penalty predictions reuse the same `votes` table: each shot is stored as its own question (`Penalty {fixtureId} · {team} · shot {n}`) with choice `Goal` or `Miss`. No extra tables are required.
+Also run `supabase/sql/vote_choice_counts.sql` once so in-game penalty direction results can aggregate Top Left / Middle / etc.
+
+Penalty predictions reuse the same `votes` table: each shot is stored as its own question (`Penalty {fixtureId} · {team} · shot {n}`) with choice `Goal` or `Miss`. No extra tables are required. In-game penalty *direction* votes use one question (`Penalty kick · …`) with choice set to the corner label.
 
 ### 2. Deploy the API-Football proxy
 
@@ -396,7 +410,7 @@ const FAKE_VOTES = { min: 18, max: 36 };
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `POLL.options` | `["Valid","Invalid"]` | Vote labels shown on card/VAR overlays. |
-| `POLL.syncSeconds` | `3` | Content sync interval. |
+| `POLL.syncSeconds` | `2` | Content sync interval. |
 | `POLL.decisionSeconds` | `20` | Vote window from shared `opened_at`. |
 | `POLL.confirmSeconds` | `5` | Auto-submit delay after a pick. |
 | `POLL.resultsDelaySeconds` | `21` | When results appear relative to `opened_at`. |

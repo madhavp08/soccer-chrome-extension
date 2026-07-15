@@ -1,12 +1,16 @@
 importScripts("config.js");
 
 const GOAL_MOMENT_TTL_MS = 120000;
-const LIVE_CACHE_TTL_MS = 8000;
-const FIXTURE_CACHE_TTL_MS = 2500;
-const FETCH_TIMEOUT_MS = 10000;
+const LIVE_CACHE_TTL_MS = 12000;
+const LIVE_STALE_TTL_MS = 30000;
+const FIXTURE_CACHE_TTL_MS = 4000;
+const FIXTURE_STALE_TTL_MS = 15000;
+const FETCH_TIMEOUT_MS = 8000;
+const PENALTY_DIRECTIONS = ["Top Left", "Bottom Left", "Middle", "Bottom Right", "Top Right"];
 
 const liveCache = { at: 0, data: null };
 const fixtureCache = new Map();
+const proxyInFlight = new Map();
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.type) return;
@@ -14,7 +18,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "sync") {
     sync(sender)
       .then(sendResponse)
-      .catch(() => sendResponse({ activePolls: [], goalMoments: [], presence: "away" }));
+      .catch(() =>
+        sendResponse({ activePolls: [], goalMoments: [], penaltyKicks: [], presence: "away" })
+      );
     return true;
   }
 
@@ -73,6 +79,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === "penaltyDirectionVote") {
+    if (!msg.choice || !msg.question || !PENALTY_DIRECTIONS.includes(msg.choice)) {
+      sendResponse({ ok: false, error: "Missing penalty direction fields" });
+      return;
+    }
+    submitVote(msg.choice, msg.question)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (msg.type === "penaltyDirectionBreakdown") {
+    if (!msg.question) {
+      sendResponse({ ok: false });
+      return;
+    }
+    getPenaltyDirectionBreakdown(msg.question)
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
   if (msg.type === "listLiveGames") {
     listLiveGames()
       .then((games) => sendResponse({ ok: true, games }))
@@ -106,14 +134,16 @@ async function sync(sender) {
     "selectedGameId",
     "afEventsLen"
   ]);
-  if (!enabled) return { activePolls: [], goalMoments: [], presence: "away" };
+  if (!enabled) {
+    return { activePolls: [], goalMoments: [], penaltyKicks: [], presence: "away" };
+  }
 
   const presence = await resolvePresence(sender);
 
   let gameId = selectedGameId;
   if (!gameId) {
     const games = await listLiveGames();
-    if (!games.length) return { presence, activePolls: [], goalMoments: [] };
+    if (!games.length) return { presence, activePolls: [], goalMoments: [], penaltyKicks: [] };
     if (games.length === 1) {
       gameId = games[0].id;
       await chrome.storage.local.set({
@@ -122,23 +152,44 @@ async function sync(sender) {
         afEventsLen: null
       });
     } else {
-      return { needGamePick: true, presence, games, activePolls: [], goalMoments: [] };
+      return {
+        needGamePick: true,
+        presence,
+        games,
+        activePolls: [],
+        goalMoments: [],
+        penaltyKicks: []
+      };
     }
   }
 
   const { finished, penaltyShootout, inPenalties } = await registerNewEvents(gameId, afEventsLen);
   if (finished) {
     await turnOffAfterMatch();
-    return { presence, activePolls: [], goalMoments: [], matchOver: true };
+    return { presence, activePolls: [], goalMoments: [], penaltyKicks: [], matchOver: true };
   }
 
-  const activePolls = await fetchActivePolls(gameId);
-  const goalMoments =
-    presence === "away" && !inPenalties ? await listPendingGoalMoments() : [];
+  const pollsPromise = fetchActivePolls(gameId);
+  const goalsPromise =
+    presence === "away" && !inPenalties ? listPendingGoalMoments() : Promise.resolve([]);
+  const [pollRows, goalMoments] = await Promise.all([pollsPromise, goalsPromise]);
+
+  const activePolls = [];
+  const penaltyKicks = [];
+  for (const poll of pollRows) {
+    if (!poll || !poll.question) continue;
+    if (isPenaltyKickQuestion(poll.question)) {
+      penaltyKicks.push(poll);
+    } else if (!isPenaltyShootoutQuestion(poll.question)) {
+      activePolls.push(poll);
+    }
+  }
+
   return {
     presence,
     activePolls,
     goalMoments,
+    penaltyKicks,
     penaltyShootout
   };
 }
@@ -222,7 +273,12 @@ async function registerNewEvents(gameId, afEventsLen) {
     const pollOpens = [];
     for (const event of fresh) {
       if (!event || !event.type) continue;
-      if (voteTypes.includes(event.type)) {
+      if (!inPenalties && isInGamePenaltyAward(event)) {
+        const kick = buildPenaltyKickPoll(gameId, event);
+        if (kick && kick.question) pollOpens.push(openPoll(gameId, kick.question));
+        continue;
+      }
+      if (voteTypes.includes(event.type) && !isInGamePenaltyAward(event)) {
         const poll = buildPoll(event);
         if (poll && poll.question) pollOpens.push(openPoll(gameId, poll.question));
       }
@@ -321,33 +377,51 @@ async function fetchActivePolls(fixtureId) {
   }
 }
 
-async function listLiveGames() {
+async function listLiveGames(options) {
+  const allowStale = !(options && options.fresh);
   const now = Date.now();
   if (liveCache.data && now - liveCache.at < LIVE_CACHE_TTL_MS) {
     return liveCache.data;
   }
+  if (allowStale && liveCache.data && now - liveCache.at < LIVE_STALE_TTL_MS) {
+    refreshLiveGames();
+    return liveCache.data;
+  }
+  return refreshLiveGames();
+}
 
-  const json = await callProxy("action=live");
-  const list = json && Array.isArray(json.response) ? json.response : [];
-  const games = list
-    .filter((item) => item && item.fixture && item.fixture.id != null)
-    .map((item) => {
-      const home = item.teams && item.teams.home ? item.teams.home.name : "Home";
-      const away = item.teams && item.teams.away ? item.teams.away.name : "Away";
-      const gh = item.goals && item.goals.home != null ? item.goals.home : null;
-      const ga = item.goals && item.goals.away != null ? item.goals.away : null;
-      const score = gh != null && ga != null ? ` (${gh}-${ga})` : "";
-      const competition = item.league && item.league.name ? String(item.league.name) : "";
-      const matchup = `${home} vs ${away}${score}`;
-      return {
-        id: item.fixture.id,
-        label: competition ? `${competition} · ${matchup}` : matchup
-      };
-    });
-
-  liveCache.at = now;
-  liveCache.data = games;
-  return games;
+async function refreshLiveGames() {
+  if (proxyInFlight.has("live")) {
+    return proxyInFlight.get("live");
+  }
+  const task = (async () => {
+    const json = await callProxy("action=live");
+    const list = json && Array.isArray(json.response) ? json.response : [];
+    const games = list
+      .filter((item) => item && item.fixture && item.fixture.id != null)
+      .map((item) => {
+        const home = item.teams && item.teams.home ? item.teams.home.name : "Home";
+        const away = item.teams && item.teams.away ? item.teams.away.name : "Away";
+        const gh = item.goals && item.goals.home != null ? item.goals.home : null;
+        const ga = item.goals && item.goals.away != null ? item.goals.away : null;
+        const score = gh != null && ga != null ? ` (${gh}-${ga})` : "";
+        const competition = item.league && item.league.name ? String(item.league.name) : "";
+        const matchup = `${home} vs ${away}${score}`;
+        return {
+          id: item.fixture.id,
+          label: competition ? `${competition} · ${matchup}` : matchup
+        };
+      });
+    liveCache.at = Date.now();
+    liveCache.data = games;
+    return games;
+  })();
+  proxyInFlight.set("live", task);
+  try {
+    return await task;
+  } finally {
+    proxyInFlight.delete("live");
+  }
 }
 
 async function fetchFixture(id) {
@@ -357,16 +431,35 @@ async function fetchFixture(id) {
   if (cached && now - cached.at < FIXTURE_CACHE_TTL_MS) {
     return cached.data;
   }
-
-  const json = await callProxy(`action=fixture&id=${encodeURIComponent(key)}`);
-  const list = json && Array.isArray(json.response) ? json.response : [];
-  const data = list.length ? list[0] : null;
-  fixtureCache.set(key, { at: now, data });
-  if (fixtureCache.size > 20) {
-    const oldest = fixtureCache.keys().next().value;
-    fixtureCache.delete(oldest);
+  if (cached && now - cached.at < FIXTURE_STALE_TTL_MS) {
+    refreshFixture(key);
+    return cached.data;
   }
-  return data;
+  return refreshFixture(key);
+}
+
+async function refreshFixture(key) {
+  const flightKey = `fixture:${key}`;
+  if (proxyInFlight.has(flightKey)) {
+    return proxyInFlight.get(flightKey);
+  }
+  const task = (async () => {
+    const json = await callProxy(`action=fixture&id=${encodeURIComponent(key)}`);
+    const list = json && Array.isArray(json.response) ? json.response : [];
+    const data = list.length ? list[0] : null;
+    fixtureCache.set(key, { at: Date.now(), data });
+    if (fixtureCache.size > 20) {
+      const oldest = fixtureCache.keys().next().value;
+      fixtureCache.delete(oldest);
+    }
+    return data;
+  })();
+  proxyInFlight.set(flightKey, task);
+  try {
+    return await task;
+  } finally {
+    proxyInFlight.delete(flightKey);
+  }
 }
 
 async function callProxy(query) {
@@ -381,24 +474,60 @@ async function callProxy(query) {
   }
 }
 
+function isInGamePenaltyAward(event) {
+  if (!event) return false;
+  const detail = String(event.detail || "");
+  const comments = String(event.comments || "");
+  const blob = `${detail} ${comments}`;
+  if (event.type === "Var") {
+    return /penalty\s+(confirmed|awarded)/i.test(blob) || /^penalty$/i.test(detail.trim());
+  }
+  return false;
+}
+
+function isPenaltyKickQuestion(question) {
+  return String(question || "").startsWith("Penalty kick ·");
+}
+
+function isPenaltyShootoutQuestion(question) {
+  return String(question || "").startsWith("Penalty shootout ");
+}
+
+function buildPenaltyKickPoll(fixtureId, event) {
+  const team = event.team && event.team.name ? event.team.name : "";
+  const player = event.player && event.player.name ? event.player.name : "";
+  const who = [player, team].filter(Boolean).join(" ") || "Unknown";
+  const elapsed = event.time && event.time.elapsed != null ? event.time.elapsed : null;
+  const extra = event.time && event.time.extra ? `+${event.time.extra}` : "";
+  const minute = elapsed != null ? `${elapsed}${extra}'` : "";
+  const stamp = minute || String(event.detail || "spot");
+  return {
+    question: `Penalty kick · ${fixtureId} · ${stamp} · ${who}`
+  };
+}
+
 function buildPoll(event) {
   const team = event.team && event.team.name ? event.team.name : "";
   const player = event.player && event.player.name ? event.player.name : "";
-  const detail = event.detail || (event.type === "Card" ? "Card" : "VAR review");
   const context = event.comments || "";
   const who = [player, team].filter(Boolean).join(" ");
 
   if (event.type === "Card") {
+    const detail = event.detail || "Card";
     return {
       question: who ? `${detail} for ${who}.` : `${detail}.`,
       context
     };
   }
 
+  let detail = String(event.detail || "").trim();
+  detail = detail.replace(/^VAR\s*/i, "").trim();
+  if (!detail || /^VAR$/i.test(detail)) detail = "review";
+
   if (who) {
-    return { question: `VAR ${detail} for ${who}.`, context };
+    return { question: `VAR · ${detail} for ${who}.`, context };
   }
-  return { question: `VAR ${detail}.`, context };
+  return { question: `VAR · ${detail}.`, context };
 }
 
 function buildGoalMoment(event) {
@@ -449,6 +578,49 @@ function seededFakeVotes(question) {
   return { total, yes, no: total - yes };
 }
 
+function seededFakeChoiceCounts(question, choices) {
+  const min = FAKE_VOTES && FAKE_VOTES.min != null ? FAKE_VOTES.min : 18;
+  const max = FAKE_VOTES && FAKE_VOTES.max != null ? FAKE_VOTES.max : 36;
+  const h0 = hashString(question || "");
+  const span = Math.max(0, max - min);
+  const total = min + (h0 % (span + 1));
+  const weights = choices.map((choice, i) => {
+    const h = hashString(`${question || ""}::${choice}::${i}`);
+    return 3 + (h % 10);
+  });
+  const weightSum = weights.reduce((a, b) => a + b, 0) || 1;
+  const counts = weights.map((w) => Math.floor((total * w) / weightSum));
+  let used = counts.reduce((a, b) => a + b, 0);
+  let idx = 0;
+  while (used < total) {
+    counts[idx % counts.length] += 1;
+    used += 1;
+    idx += 1;
+  }
+  return counts;
+}
+
+function percentParts(counts) {
+  const total = counts.reduce((a, b) => a + b, 0);
+  if (!total) {
+    const even = Math.floor(100 / counts.length);
+    const parts = counts.map(() => even);
+    let rem = 100 - even * counts.length;
+    for (let i = 0; rem > 0; i++, rem--) parts[i % parts.length] += 1;
+    return parts;
+  }
+  const raw = counts.map((c) => (c * 100) / total);
+  const floors = raw.map((r) => Math.floor(r));
+  let rem = 100 - floors.reduce((a, b) => a + b, 0);
+  const order = raw
+    .map((r, i) => ({ i, frac: r - floors[i] }))
+    .sort((a, b) => b.frac - a.frac);
+  for (let k = 0; k < rem; k++) {
+    floors[order[k % order.length].i] += 1;
+  }
+  return floors;
+}
+
 async function getBreakdown(question) {
   const { url } = SUPABASE_CONFIG;
   try {
@@ -479,6 +651,45 @@ async function getBreakdown(question) {
   } catch (_e) {
     return { ok: false };
   }
+}
+
+async function getPenaltyDirectionBreakdown(question) {
+  const { url } = SUPABASE_CONFIG;
+  const choices = PENALTY_DIRECTIONS.slice();
+  const real = choices.map(() => 0);
+  try {
+    const res = await fetchWithTimeout(`${url}/rest/v1/rpc/vote_choice_counts`, {
+      method: "POST",
+      headers: supabaseHeaders(),
+      body: JSON.stringify({ q: question })
+    });
+    if (res.ok) {
+      const rows = await res.json().catch(() => null);
+      if (Array.isArray(rows)) {
+        for (const row of rows) {
+          if (!row || row.choice == null) continue;
+          const idx = choices.indexOf(String(row.choice));
+          if (idx >= 0) real[idx] = Number(row.n) || 0;
+        }
+      }
+    }
+  } catch (_e) {
+    // Fake pad still returned below.
+  }
+
+  const fake = seededFakeChoiceCounts(question, choices);
+  const counts = choices.map((_, i) => real[i] + fake[i]);
+  const percents = percentParts(counts);
+  const total = counts.reduce((a, b) => a + b, 0);
+  return {
+    ok: true,
+    total,
+    choices: choices.map((choice, i) => ({
+      choice,
+      count: counts[i],
+      percent: percents[i]
+    }))
+  };
 }
 
 function asShotFlags(shots) {

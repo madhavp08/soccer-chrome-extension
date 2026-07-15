@@ -30,7 +30,7 @@ const FAKE_VOTES = {
 
 const POLL = {
   options: ["Valid", "Invalid"],
-  syncSeconds: 3,
+  syncSeconds: 2,
   decisionSeconds: 20,
   confirmSeconds: 5,
   resultsDelaySeconds: 21,
