@@ -23,11 +23,106 @@ const shownMoments = new Set();
 
 const VALID_COLOR = "#00b86b";
 const INVALID_COLOR = "#e5342b";
-const VALID_KEYS = new Set(["a", "j"]);
-const INVALID_KEYS = new Set(["d", "l"]);
 const RESULTS_SHOW_MS = 6000;
 const VOTE_SAVE_TIMEOUT_MS = 8000;
 const PENALTY_DIRECTIONS = ["Top Left", "Bottom Left", "Middle", "Bottom Right", "Top Right"];
+
+function isKey(e, name) {
+  return e.key === name || e.key.toLowerCase() === name.toLowerCase();
+}
+
+function bindOverlayKeyboard(items, options) {
+  const opts = options || {};
+  let index = 0;
+
+  function liveItems() {
+    return (items || []).filter((el) => el && !el.disabled && el.isConnected);
+  }
+
+  function paint() {
+    const list = liveItems();
+    for (const el of items || []) {
+      if (el) el.classList.remove("vardict-btn--focused");
+    }
+    if (!list.length) return;
+    if (index < 0) index = list.length - 1;
+    if (index >= list.length) index = 0;
+    list[index].classList.add("vardict-btn--focused");
+  }
+
+  function move(delta) {
+    const list = liveItems();
+    if (!list.length) return;
+    index = (index + delta + list.length * 8) % list.length;
+    paint();
+  }
+
+  function activate() {
+    const list = liveItems();
+    const el = list[index];
+    if (!el) return;
+    el.click();
+  }
+
+  function onKey(e) {
+    if (opts.isActive && !opts.isActive()) return;
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+
+    if (typeof opts.onValidInvalid === "function") {
+      if (isKey(e, "a") || e.key === "ArrowLeft") {
+        e.preventDefault();
+        e.stopPropagation();
+        opts.onValidInvalid("valid");
+        return;
+      }
+      if (isKey(e, "d") || e.key === "ArrowRight") {
+        e.preventDefault();
+        e.stopPropagation();
+        opts.onValidInvalid("invalid");
+        return;
+      }
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      e.stopPropagation();
+      move(-1);
+      return;
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      e.stopPropagation();
+      move(1);
+      return;
+    }
+
+    if (isKey(e, "w") || e.key === "ArrowUp") {
+      e.preventDefault();
+      e.stopPropagation();
+      move(-1);
+      return;
+    }
+    if (isKey(e, "s") || e.key === "ArrowDown") {
+      e.preventDefault();
+      e.stopPropagation();
+      move(1);
+      return;
+    }
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation();
+      activate();
+    }
+  }
+
+  document.addEventListener("keydown", onKey, true);
+  paint();
+
+  return () => {
+    document.removeEventListener("keydown", onKey, true);
+    for (const el of items || []) {
+      if (el) el.classList.remove("vardict-btn--focused");
+    }
+  };
+}
 
 const PREVIEW = {
   question: "Yellow Card for Example Player Example Team.",
@@ -226,6 +321,16 @@ function ensureOverlayStyles() {
     }
     .vardict-btn--selected:hover:not(:disabled) {
       background: #333333;
+      border-color: #ffffff;
+    }
+    .vardict-btn--focused {
+      outline: 2px solid #ffffff;
+      outline-offset: 2px;
+      border-color: rgba(255, 255, 255, 0.95);
+    }
+    .vardict-pen-dot.vardict-btn--focused {
+      outline: 2px solid #ffffff;
+      outline-offset: 2px;
       border-color: #ffffff;
     }
     .vardict-btn-title {
@@ -678,6 +783,7 @@ function showGamePicker(games, options) {
     className: "vardict-heading"
   });
 
+  const buttons = [];
   games.forEach((game) => {
     const btn = makeButton("vardict-btn--block");
     btn.textContent = game.label;
@@ -704,13 +810,22 @@ function showGamePicker(games, options) {
       );
     });
     content.appendChild(btn);
+    buttons.push(btn);
   });
 
+  const unbindKeys = bindOverlayKeyboard(buttons);
+
   if (!mountOverlay(el)) {
+    unbindKeys();
     gamePickerOpen = false;
     busy = false;
     overlayEl = null;
+    return;
   }
+
+  overlayCleanup = () => {
+    unbindKeys();
+  };
 }
 
 function makePenDots(parent, shots, interactive) {
@@ -811,6 +926,10 @@ function showPenaltyDirection(kick, voteEnd, done, options) {
     marginTop: "14px"
   });
 
+  const unbindKeys = bindOverlayKeyboard(buttons, {
+    isActive: () => !finalized
+  });
+
   const countdown = trackInterval(() => {
     if (finalized) return;
     const secs = Math.ceil((voteEnd - Date.now()) / 1000);
@@ -888,6 +1007,7 @@ function showPenaltyDirection(kick, voteEnd, done, options) {
     if (finalized) return;
     if (save && !selected) return;
     finalized = true;
+    unbindKeys();
     clearTracked(countdown);
     clearTracked(maxTimer);
     buttons.forEach((b) => {
@@ -927,13 +1047,16 @@ function showPenaltyDirection(kick, voteEnd, done, options) {
   const maxTimer = trackTimeout(() => finalize(false), msLeft);
 
   if (!mountOverlay(el)) {
+    unbindKeys();
     clearTracked(countdown);
     clearTracked(maxTimer);
     overlayEl = null;
     done();
+    return;
   }
 
   overlayCleanup = () => {
+    unbindKeys();
     clearTracked(countdown);
     clearTracked(maxTimer);
   };
@@ -958,16 +1081,21 @@ function showPenaltyPredict(shootout, done, options) {
   });
 
   div(content, shootout.home, { className: "vardict-pen-team" });
-  makePenDots(content, homeShots, true);
+  const homeDots = makePenDots(content, homeShots, true);
 
   div(content, shootout.away, { className: "vardict-pen-team" });
-  makePenDots(content, awayShots, true);
+  const awayDots = makePenDots(content, awayShots, true);
 
   const note = div(content, "", { className: "vardict-muted", marginBottom: "10px" });
   const submit = makeButton("vardict-btn--block");
   submit.textContent = "Submit";
   submit.style.textAlign = "center";
   content.appendChild(submit);
+
+  const focusItems = homeDots.concat(awayDots, submit);
+  const unbindKeys = bindOverlayKeyboard(focusItems, {
+    isActive: () => !finalized
+  });
 
   function updateNote() {
     const secs = Math.max(0, Math.ceil((voteEnd - Date.now()) / 1000));
@@ -1021,6 +1149,7 @@ function showPenaltyPredict(shootout, done, options) {
   function finalize(save) {
     if (finalized) return;
     finalized = true;
+    unbindKeys();
     clearTracked(countdown);
     clearTracked(maxTimer);
     submit.disabled = true;
@@ -1071,11 +1200,19 @@ function showPenaltyPredict(shootout, done, options) {
   );
 
   if (!mountOverlay(el)) {
+    unbindKeys();
     clearTracked(countdown);
     clearTracked(maxTimer);
     overlayEl = null;
     done();
+    return;
   }
+
+  overlayCleanup = () => {
+    unbindKeys();
+    clearTracked(countdown);
+    clearTracked(maxTimer);
+  };
 }
 
 function showGoalMoment(moment, done) {
@@ -1129,6 +1266,7 @@ function showPoll(poll, voteEnd, options) {
   });
 
   function pick(label, btn) {
+    if (finalized) return;
     selected = label;
     buttons.forEach((b) => {
       b.classList.toggle("vardict-btn--selected", b === btn);
@@ -1137,24 +1275,6 @@ function showPoll(poll, voteEnd, options) {
     clearTracked(confirmTimer);
     confirmTimer = trackTimeout(finalize, POLL.confirmSeconds * 1000);
   }
-
-  function onKey(e) {
-    if (finalized) return;
-    const k = e.key.toLowerCase();
-    const validLabel = POLL.options[0] || "Valid";
-    const invalidLabel = POLL.options[1] || "Invalid";
-    if (VALID_KEYS.has(k)) {
-      e.preventDefault();
-      e.stopPropagation();
-      pick(validLabel, buttons[0]);
-    } else if (INVALID_KEYS.has(k)) {
-      e.preventDefault();
-      e.stopPropagation();
-      pick(invalidLabel, buttons[1]);
-    }
-  }
-
-  document.addEventListener("keydown", onKey, true);
 
   const note = div(content, `${Math.ceil(msLeft / 1000)}s`, {
     className: "vardict-muted",
@@ -1168,8 +1288,18 @@ function showPoll(poll, voteEnd, options) {
     minHeight: "16px"
   });
 
+  const validLabel = POLL.options[0] || "Valid";
+  const invalidLabel = POLL.options[1] || "Invalid";
+  const unbindKeys = bindOverlayKeyboard(buttons, {
+    isActive: () => !finalized,
+    onValidInvalid: (side) => {
+      if (side === "valid") pick(validLabel, buttons[0]);
+      else pick(invalidLabel, buttons[1]);
+    }
+  });
+
   if (!mountOverlay(el)) {
-    document.removeEventListener("keydown", onKey, true);
+    unbindKeys();
     overlayEl = null;
     busy = false;
     tryStartVote();
@@ -1187,7 +1317,7 @@ function showPoll(poll, voteEnd, options) {
   }, 1000);
 
   overlayCleanup = () => {
-    document.removeEventListener("keydown", onKey, true);
+    unbindKeys();
     clearTracked(confirmTimer);
     clearTracked(maxTimer);
     clearTracked(countdownTimer);
