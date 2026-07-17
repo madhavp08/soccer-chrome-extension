@@ -8,9 +8,10 @@ security definer
 set search_path = public
 as $$
   select
-    count(*) as total,
-    count(*) filter (where choice in ('Valid', 'Goal')) as yes,
-    count(*) filter (where choice in ('Invalid', 'Miss')) as no
+    (count(*) filter (where choice in ('Valid', 'Goal', 'Yes'))
+      + count(*) filter (where choice in ('Invalid', 'Miss', 'No'))) as total,
+    count(*) filter (where choice in ('Valid', 'Goal', 'Yes')) as yes,
+    count(*) filter (where choice in ('Invalid', 'Miss', 'No')) as no
   from votes
   where question = q;
 $$;

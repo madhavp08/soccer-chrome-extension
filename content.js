@@ -1414,10 +1414,13 @@ function showBreakdown(question, done) {
   let barTimer = null;
 
   div(content, question, {
-    fontSize: "15px",
+    fontSize: "14px",
     fontWeight: "700",
-    lineHeight: "1.3",
-    marginBottom: "14px"
+    lineHeight: "1.25",
+    marginBottom: "14px",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis"
   });
   const body = div(content, "Loading results…", { className: "vardict-muted", marginBottom: "0" });
   if (!mountOverlay(el)) {

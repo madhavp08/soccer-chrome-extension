@@ -635,18 +635,19 @@ async function getBreakdown(question) {
     const row = Array.isArray(data) ? data[0] : data;
     if (!row) return { ok: false };
 
-    const realTotal = Number(row.total) || 0;
     const realYes = Number(row.yes) || 0;
     const realNo = Number(row.no) || 0;
     const fake = seededFakeVotes(question);
+    const yes = realYes + fake.yes;
+    const no = realNo + fake.no;
 
     return {
       ok: true,
-      total: realTotal + fake.total,
-      yes: realYes + fake.yes,
-      no: realNo + fake.no,
-      valid: realYes + fake.yes,
-      invalid: realNo + fake.no
+      total: yes + no,
+      yes,
+      no,
+      valid: yes,
+      invalid: no
     };
   } catch (_e) {
     return { ok: false };
