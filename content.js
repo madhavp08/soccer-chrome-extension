@@ -556,6 +556,7 @@ function syncTick() {
 }
 
 function handleWatchingSync(res) {
+  momentQueue.length = 0;
   ingestPenaltyKicks(res && res.penaltyKicks ? res.penaltyKicks : []);
   ingestViewerPolls(res && res.activePolls ? res.activePolls : []);
   tryStartPenalty();
@@ -566,6 +567,7 @@ function handleWatchingSync(res) {
 }
 
 function handleAwaySync(res) {
+  voteQueue.length = 0;
   if (!(res && res.penaltyShootout)) {
     ingestGoalMoments(res && res.goalMoments ? res.goalMoments : []);
   }
@@ -598,9 +600,7 @@ function tryStartPenalty() {
     busy = false;
     tryStartPenalty();
     tryStartPenaltyKick();
-    tryStartVote();
-    tryStartGoalMoment();
-    tryStartBreakdown(presence !== "away");
+    resumeAfterOverlay();
   });
 }
 
@@ -633,9 +633,7 @@ function tryStartPenaltyKick() {
       busy = false;
       tryStartPenalty();
       tryStartPenaltyKick();
-      tryStartVote();
-      tryStartGoalMoment();
-      tryStartBreakdown(presence !== "away");
+      resumeAfterOverlay();
     });
     return;
   }
@@ -720,17 +718,27 @@ function scheduleBreakdownWake() {
     breakdownWakeTimer = null;
     tryStartPenalty();
     tryStartPenaltyKick();
-    if (presence === "away") {
-      tryStartBreakdown(false);
-      tryStartGoalMoment();
-    } else {
-      tryStartBreakdown(true);
-      tryStartVote();
-    }
+    resumeAfterOverlay();
   }, delay);
 }
 
+function resumeAfterOverlay() {
+  if (presence === "away") {
+    voteQueue.length = 0;
+    tryStartBreakdown(false);
+    tryStartGoalMoment();
+    return;
+  }
+  momentQueue.length = 0;
+  tryStartBreakdown(true);
+  tryStartVote();
+}
+
 function tryStartVote() {
+  if (presence === "away") {
+    voteQueue.length = 0;
+    return;
+  }
   while (!busy && !overlayEl && !gamePickerOpen && !pendingPenalty && !kickQueue.length && voteQueue.length) {
     const poll = voteQueue.shift();
     const voteEnd = poll.opened + POLL.decisionSeconds * 1000;
@@ -745,6 +753,10 @@ function tryStartVote() {
 }
 
 function tryStartGoalMoment() {
+  if (presence !== "away") {
+    momentQueue.length = 0;
+    return;
+  }
   if (busy || overlayEl || gamePickerOpen || pendingPenalty || kickQueue.length || !momentQueue.length) {
     return;
   }
@@ -753,10 +765,8 @@ function tryStartGoalMoment() {
   showGoalMoment(moment, () => {
     shownMoments.add(moment.key);
     busy = false;
-    tryStartGoalMoment();
     tryStartPenaltyKick();
-    tryStartBreakdown(false);
-    tryStartVote();
+    resumeAfterOverlay();
   });
 }
 
@@ -773,9 +783,7 @@ function tryStartBreakdown(requireVote) {
     busy = false;
     scheduleBreakdownWake();
     tryStartPenaltyKick();
-    tryStartBreakdown(requireVote);
-    tryStartGoalMoment();
-    tryStartVote();
+    resumeAfterOverlay();
   });
 }
 
