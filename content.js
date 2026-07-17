@@ -31,6 +31,10 @@ function isKey(e, name) {
   return e.key === name || e.key.toLowerCase() === name.toLowerCase();
 }
 
+function isCode(e, code) {
+  return e.code === code;
+}
+
 function bindOverlayKeyboard(items, options) {
   const opts = options || {};
   let index = 0;
@@ -69,14 +73,17 @@ function bindOverlayKeyboard(items, options) {
     if (e.altKey || e.ctrlKey || e.metaKey) return;
     if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
 
+    const prev = isCode(e, "KeyW") || isKey(e, "w") || e.key === "ArrowUp";
+    const next = isCode(e, "KeyS") || isKey(e, "s") || e.key === "ArrowDown";
+
     if (typeof opts.onValidInvalid === "function") {
-      if (isKey(e, "a") || e.key === "ArrowLeft") {
+      if (isCode(e, "KeyA") || isKey(e, "a") || e.key === "ArrowLeft") {
         e.preventDefault();
         e.stopPropagation();
         opts.onValidInvalid("valid");
         return;
       }
-      if (isKey(e, "d") || e.key === "ArrowRight") {
+      if (isCode(e, "KeyD") || isKey(e, "d") || e.key === "ArrowRight") {
         e.preventDefault();
         e.stopPropagation();
         opts.onValidInvalid("invalid");
@@ -94,13 +101,13 @@ function bindOverlayKeyboard(items, options) {
       return;
     }
 
-    if (isKey(e, "w") || e.key === "ArrowUp") {
+    if (prev) {
       e.preventDefault();
       e.stopPropagation();
       move(-1);
       return;
     }
-    if (isKey(e, "s") || e.key === "ArrowDown") {
+    if (next) {
       e.preventDefault();
       e.stopPropagation();
       move(1);

@@ -8,7 +8,7 @@ VARdict
 
 ## Summary (max 132 characters)
 
-Vote on controversial calls in real time. While a poll is open: A or Left for Valid, D or Right for Invalid.
+Vote on controversial calls in real time. A/Left=Valid, D/Right=Invalid. W/Up & S/Down move focus.
 
 ## Category
 
@@ -32,7 +32,7 @@ Features:
 - Synced vote windows and results timing across all users.
 - Matte black overlays on the page you are already on, including fullscreen video.
 - Keyboard shortcuts while a poll is open: A or Left arrow for Valid, D or Right arrow for Invalid.
-  S/Down and W/Up move focus inside overlays (including games and penalty UIs); Enter/Space selects.
+  W/Up and S/Down move focus inside overlays (including games and penalty UIs); Enter/Space selects.
 - Anonymous — only your Valid/Invalid choice and the question text are stored.
 
 VARdict does not read or collect the content of websites you visit. Overlays are drawn

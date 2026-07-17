@@ -69,7 +69,7 @@ When the feed reports a `Card` or `Var` event, the first client to notice regist
 - You get about **20 seconds** from `opened_at` to decide.
 - Options are **Valid** and **Invalid**.
 - After you pick, the choice auto-submits in **5 seconds** unless you change it (changing resets the timer).
-- Keyboard while the poll is open: **A** or **Left arrow** = Valid, **D** or **Right arrow** = Invalid. **S** / **Down** (and **W** / **Up**) move focus within overlays; **Enter** / **Space** activates the focused control.
+- Keyboard while the poll is open: **A** or **Left arrow** = Valid, **D** or **Right arrow** = Invalid. **W** / **Up** and **S** / **Down** move focus within overlays; **Enter** / **Space** activates the focused control.
 - If you never pick, the vote is skipped; watching users who skipped do not get a forced results bar for that question.
 
 VAR questions are worded as `VAR · {detail} for {player}…` (duplicate “VAR” prefixes from the feed are stripped).
